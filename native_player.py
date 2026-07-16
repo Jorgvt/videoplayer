@@ -52,6 +52,18 @@ class DatasetPlayer:
         self.fps_history = []
         self.current_fps = 0.0
         
+        # Playback sync timing anchors
+        self.play_start_time = 0.0
+        self.play_start_frame_idx = 0
+        
+        # Pre-allocated display buffers
+        self.buffer_side_by_side = None
+        self.buffer_single = None
+        self.frames_sbs = []
+        
+        # Performance/UI toggle state
+        self.show_ui = True
+        
         self.load_active_videos()
         
     def scan_dataset(self):
@@ -142,8 +154,27 @@ class DatasetPlayer:
         self.frames_a = self.preload_video(vid_a["path"])
         self.frames_b = self.preload_video(vid_b["path"])
         
+        # Pre-stack Side-by-Side frames to RAM to completely eliminate CPU overhead during play
+        print("Pre-stacking Side-by-Side frames...", end="", flush=True)
+        self.frames_sbs = []
+        len_a = len(self.frames_a)
+        len_b = len(self.frames_b)
+        num_frames = max(len_a, len_b)
+        for i in range(num_frames):
+            fa = self.frames_a[i % len_a]
+            fb = self.frames_b[i % len_b]
+            self.frames_sbs.append(np.hstack((fa, fb)))
+        print(" Done.")
+        
         # Reset frames
         self.frame_idx = 0
+        self.update_playback_anchor()
+        
+        # Pre-allocate frames (used for zoom mode)
+        if self.frames_a:
+            h, w = self.frames_a[0].shape[:2]
+            self.buffer_side_by_side = np.zeros((h, w * 2, 3), dtype=np.uint8)
+            self.buffer_single = np.zeros((h, w, 3), dtype=np.uint8)
         
     def preload_video(self, path):
         print(f"Preloading {Path(path).name} into RAM...", end="", flush=True)
@@ -157,6 +188,10 @@ class DatasetPlayer:
         cap.release()
         print(f" Loaded {len(frames)} frames.")
         return frames
+
+    def update_playback_anchor(self):
+        self.play_start_time = time.perf_counter()
+        self.play_start_frame_idx = self.frame_idx
 
     def apply_zoom_pan(self, img):
         if self.zoom_scale == 1.0:
@@ -209,28 +244,52 @@ class DatasetPlayer:
         frame_a = self.frames_a[idx_a]
         frame_b = self.frames_b[idx_b]
         
-        # Apply Zoom & Pan
-        frame_a_disp = self.apply_zoom_pan(frame_a)
-        frame_b_disp = self.apply_zoom_pan(frame_b)
-        
         h, w = frame_a.shape[:2]
         
-        # Combine according to layout
-        if self.layout == "side-by-side":
-            combined = np.hstack((frame_a_disp, frame_b_disp))
-            display_w = w * 2
-        elif self.layout == "overlay":
-            combined = frame_b_disp.copy() if self.show_b_in_overlay else frame_a_disp.copy()
-            display_w = w
-        elif self.layout == "single-a":
-            combined = frame_a_disp.copy()
-            display_w = w
-        else: # single-b
-            combined = frame_b_disp.copy()
-            display_w = w
+        # Optimize rendering paths: Zero memory-copy when zoom is inactive
+        if self.zoom_scale == 1.0:
+            if self.layout == "side-by-side":
+                combined = self.frames_sbs[self.frame_idx % len(self.frames_sbs)]
+                display_w = w * 2
+            elif self.layout == "overlay":
+                combined = frame_b if self.show_b_in_overlay else frame_a
+                display_w = w
+            elif self.layout == "single-a":
+                combined = frame_a
+                display_w = w
+            else: # single-b
+                combined = frame_b
+                display_w = w
+        else:
+            # Zoom active: Crop & resize allocation (fallback)
+            frame_a_disp = self.apply_zoom_pan(frame_a)
+            frame_b_disp = self.apply_zoom_pan(frame_b)
             
-        # Draw UI overlay
-        self.draw_ui(combined, h, display_w)
+            if self.layout == "side-by-side":
+                self.buffer_side_by_side[:, :w] = frame_a_disp
+                self.buffer_side_by_side[:, w:] = frame_b_disp
+                combined = self.buffer_side_by_side
+                display_w = w * 2
+            elif self.layout == "overlay":
+                self.buffer_single[:, :] = frame_b_disp if self.show_b_in_overlay else frame_a_disp
+                combined = self.buffer_single
+                display_w = w
+            elif self.layout == "single-a":
+                self.buffer_single[:, :] = frame_a_disp
+                combined = self.buffer_single
+                display_w = w
+            else: # single-b
+                self.buffer_single[:, :] = frame_b_disp
+                combined = self.buffer_single
+                display_w = w
+                
+        # Draw UI overlay if enabled
+        if self.show_ui:
+            # Copy frame to draw on it to prevent mutating cached frames
+            combined_disp = combined.copy()
+            self.draw_ui(combined_disp, h, display_w)
+            return combined_disp
+            
         return combined
 
     def draw_ui(self, img, h, w):
@@ -243,23 +302,23 @@ class DatasetPlayer:
         
         status = "PLAYING" if self.playing else "PAUSED"
         text = f"[{status}] Scene: {scene_name} | Speed: {speed}x | Layout: {self.layout.upper()} | FPS: {self.current_fps:.1f}"
-        cv2.putText(img, text, (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (240, 240, 240), 1, cv2.LINE_AA)
+        cv2.putText(img, text, (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (240, 240, 240), 1, cv2.LINE_8)
         
         # Video source labels
         v_a_lbl = f"A: {self.meta_a['label']}"
         v_b_lbl = f"B: {self.meta_b['label']}"
         
         if self.layout == "side-by-side":
-            cv2.putText(img, v_a_lbl, (15, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1, cv2.LINE_AA)
-            cv2.putText(img, v_b_lbl, (w // 2 + 15, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 180, 255), 1, cv2.LINE_AA)
+            cv2.putText(img, v_a_lbl, (15, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1, cv2.LINE_8)
+            cv2.putText(img, v_b_lbl, (w // 2 + 15, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 180, 255), 1, cv2.LINE_8)
         else:
             active_label = v_b_lbl if (self.layout == "single-b" or (self.layout == "overlay" and self.show_b_in_overlay)) else v_a_lbl
-            cv2.putText(img, active_label, (15, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 120), 1, cv2.LINE_AA)
+            cv2.putText(img, active_label, (15, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 120), 1, cv2.LINE_8)
             
         # Frame counter
         total_frames = max(len(self.frames_a), len(self.frames_b))
         frame_text = f"Frame: {self.frame_idx + 1}/{total_frames} (Zoom: {int(self.zoom_scale*100)}%)"
-        cv2.putText(img, frame_text, (w - 260, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+        cv2.putText(img, frame_text, (w - 260, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_8)
 
     def on_mouse(self, event, x, y, flags, param):
         if event == cv2.EVENT_LBUTTONDOWN:
@@ -304,35 +363,62 @@ class DatasetPlayer:
         print("  [M] / [N]     : Switch Comparison Metric (Next / Previous)")
         print("  [0/1/2]       : Switch Artifact Level (0, 1, 2)")
         print("  [-] / [+]     : Playback speed (0.1x, 0.25x, 0.5x, 1x, 2x)")
+        print("  [U]           : Toggle UI Overlay (removes text overlay for maximum FPS)")
         print("  [R]           : Reset Zoom & Pan")
         print("  [Q] or [Esc]  : Quit")
         
+        last_render_time = time.perf_counter()
         while True:
+            # Calculate target frame rate and time per frame
+            speed_mult = self.speeds[self.speed_idx]
+            base_fps = 240.0
+            target_fps = base_fps * speed_mult
+            frame_time = 1.0 / target_fps
+            
+            # 1. Update playback state (time-based progression)
+            if self.playing:
+                now = time.perf_counter()
+                elapsed = now - self.play_start_time
+                total_frames = max(len(self.frames_a), len(self.frames_b))
+                
+                self.frame_idx = self.play_start_frame_idx + int(elapsed * target_fps)
+                if self.frame_idx >= total_frames:
+                    # Loop around
+                    self.play_start_time = now
+                    self.play_start_frame_idx = 0
+                    self.frame_idx = 0
+                    
+            # 2. Get and show display frame
             frame = self.get_display_frame()
             cv2.imshow(window_name, frame)
             
-            # Base video is 240 FPS.
-            # Real-time base frame time = 4.16 ms
-            # Delay in ms depends on selected speed scale
-            speed_mult = self.speeds[self.speed_idx]
-            base_fps = 240.0
-            delay_ms = int(1000.0 / (base_fps * speed_mult))
+            # 3. GUI Events & wait
+            # We call waitKey(1) every 4 frames (approx 60Hz at 240 FPS) to avoid GUI thread sleep overhead (1.5ms).
+            # This keeps the interface responsive while unlocking full 240+ FPS performance.
+            if self.frame_idx % 4 == 0:
+                key = cv2.waitKey(1) & 0xFF
+            else:
+                key = 255
             
-            # Bound delay
-            delay_ms = max(1, delay_ms)
+            total_frames = max(len(self.frames_a), len(self.frames_b))
             
-            key = cv2.waitKey(delay_ms if self.playing else 30) & 0xFF
+            # Print performance metrics to console once per second
+            if self.playing and self.frame_idx % 240 == 0:
+                print(f"  [Performance] {self.current_fps:.1f} FPS (UI: {'ON' if self.show_ui else 'OFF'})")
             
             if key == ord('q') or key == 27: # Q or Esc
                 break
             elif key == ord(' '):
                 self.playing = not self.playing
-            elif key == 83 or key == 3: # Right Arrow (Windows/Linux cv2 mappings) or ord('d')
-                self.frame_idx += 1
+                self.update_playback_anchor()
+            elif key == 83 or key == 3 or key == ord('d'): # Right Arrow or d
                 self.playing = False
-            elif key == 81 or key == 2: # Left Arrow or ord('a')
-                self.frame_idx = max(0, self.frame_idx - 1)
+                self.frame_idx = (self.frame_idx + 1) % total_frames
+                self.update_playback_anchor()
+            elif key == 81 or key == 2 or key == ord('a'): # Left Arrow or a
                 self.playing = False
+                self.frame_idx = (self.frame_idx - 1) % total_frames
+                self.update_playback_anchor()
             elif key == ord('r'):
                 self.zoom_scale = 1.0
                 self.pan_x = 0
@@ -342,7 +428,6 @@ class DatasetPlayer:
                 curr_idx = layouts.index(self.layout)
                 self.layout = layouts[(curr_idx + 1) % len(layouts)]
             elif key == 9: # Tab
-                # Toggle swap state in overlay
                 self.show_b_in_overlay = not self.show_b_in_overlay
             elif key in [ord('1'), ord('2'), ord('3'), ord('4')]:
                 self.scene_idx = key - ord('1')
@@ -358,8 +443,13 @@ class DatasetPlayer:
                 self.load_active_videos()
             elif key == ord('='): # Plus
                 self.speed_idx = min(len(self.speeds) - 1, self.speed_idx + 1)
+                self.update_playback_anchor()
             elif key == ord('-'):
                 self.speed_idx = max(0, self.speed_idx - 1)
+                self.update_playback_anchor()
+            elif key == ord('u'): # Toggle UI
+                self.show_ui = not self.show_ui
+                print(f"UI Overlay toggled: {'ON' if self.show_ui else 'OFF'} (Press 'U' to toggle)")
             elif key == ord('m'): # Next metric
                 self.metric_idx += 1
                 self.load_active_videos()
@@ -367,13 +457,20 @@ class DatasetPlayer:
                 self.metric_idx = max(0, self.metric_idx - 1)
                 self.load_active_videos()
                 
-            # If playing, increment frame
+            # 4. High-Precision Playback Pacing
             if self.playing:
-                self.frame_idx += 1
-                total_frames = max(len(self.frames_a), len(self.frames_b))
-                if self.frame_idx >= total_frames:
-                    self.frame_idx = 0 # loop
-                    
+                now = time.perf_counter()
+                time_elapsed = now - last_render_time
+                time_remaining = frame_time - time_elapsed
+                
+                if time_remaining > 0:
+                    time.sleep(time_remaining)
+            else:
+                # Paused GUI loop (30 FPS)
+                time.sleep(0.03)
+                
+            last_render_time = time.perf_counter()
+            
         cv2.destroyAllWindows()
 
 if __name__ == "__main__":

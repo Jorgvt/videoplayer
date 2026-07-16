@@ -67,6 +67,7 @@ When the native window is focused:
 | <kbd>L</kbd> | Cycle through Layouts (Side-by-Side, Overlay, Single A, Single B) |
 | <kbd>Tab</kbd> | Swap between Video A and B (when in Overlay mode) |
 | <kbd>-</kbd> / <kbd>=</kbd> | Decrease / Increase playback speed (`0.1x` to `2.0x`) |
+| <kbd>U</kbd> | Toggle UI Overlay (removes text overlay for maximum FPS) |
 | <kbd>R</kbd> | Reset Zoom & Pan |
 | **Scroll Wheel** | Zoom in / out (synced for both videos) |
 | **Left Click + Drag** | Pan around the zoomed view (synced for both videos) |
@@ -78,5 +79,6 @@ When the native window is focused:
 
 * **[app.py](app.py)** – FastAPI web server.
 * **[index.html](index.html)**, **[style.css](style.css)**, **[script.js](script.js)** – Web player frontend.
-* **[native_player.py](native_player.py)** – RAM-buffered OpenCV player.
+* **[native_player.py](native_player.py)** – RAM-buffered OpenCV dual video player.
+* **[single_player.py](single_player.py)** – Lightweight single-video diagnostic player for verifying 240Hz monitor output.
 * **[README.md](README.md)** – This guide.
