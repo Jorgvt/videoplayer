@@ -15,8 +15,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from PySide6.QtCore import Qt, QTimer, QEvent, QPoint
-from PySide6.QtGui import QImage, QPixmap, QKeySequence, QShortcut, QCursor
+from PySide6.QtCore import Qt, QTimer, QEvent, QPoint, QRect, QSize
+from PySide6.QtGui import QImage, QPixmap, QKeySequence, QShortcut, QCursor, QPainter
+from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QSlider, QCheckBox, QFrame,
@@ -167,12 +168,43 @@ QPushButton.ctrl-btn:hover {
 }
 """
 
-class VideoDisplayLabel(QLabel):
+class VideoGLWidget(QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setAlignment(Qt.AlignCenter)
-        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.qimage = None
         self.setMouseTracking(True)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.setMinimumSize(100, 100)
+        
+    def setImage(self, qimage):
+        self.qimage = qimage
+        self.update() # Triggers paintEvent
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        if self.qimage and not self.qimage.isNull():
+            # Enable hardware bilinear filtering, unless zoomed
+            zoom = 1.0
+            if hasattr(self.window(), "zoom_scale"):
+                zoom = self.window().zoom_scale
+                
+            if zoom > 1.0:
+                painter.setRenderHint(QPainter.SmoothPixmapTransform, False) # Nearest Neighbor on GPU
+            else:
+                painter.setRenderHint(QPainter.SmoothPixmapTransform, True) # Bilinear on GPU
+                
+            rect = self.rect()
+            img_size = self.qimage.size()
+            scaled_size = img_size.scaled(rect.size(), Qt.KeepAspectRatio)
+            
+            x = (rect.width() - scaled_size.width()) // 2
+            y = (rect.height() - scaled_size.height()) // 2
+            target_rect = QRect(x, y, scaled_size.width(), scaled_size.height())
+            
+            painter.drawImage(target_rect, self.qimage)
+        else:
+            painter.fillRect(self.rect(), Qt.black)
+        painter.end()
 
 class NativeGUIPlayer(QMainWindow):
     def __init__(self):
@@ -452,9 +484,9 @@ class NativeGUIPlayer(QMainWindow):
         viewport_layout.setSpacing(10)
         
         # Displays
-        self.lbl_disp_a = VideoDisplayLabel(viewport)
+        self.lbl_disp_a = VideoGLWidget(viewport)
         self.lbl_disp_a.setObjectName("video-a-lbl")
-        self.lbl_disp_b = VideoDisplayLabel(viewport)
+        self.lbl_disp_b = VideoGLWidget(viewport)
         self.lbl_disp_b.setObjectName("video-b-lbl")
         
         viewport_layout.addWidget(self.lbl_disp_a)
@@ -773,12 +805,11 @@ class NativeGUIPlayer(QMainWindow):
         resized = cv2.resize(cropped, (w, h), interpolation=cv2.INTER_NEAREST)
         return resized
 
-    def convert_to_qpixmap(self, frame):
+    def convert_to_qimage(self, frame):
         h, w, ch = frame.shape
         bytes_per_line = ch * w
-        qimg = QImage(frame.data, w, h, bytes_per_line, QImage.Format_BGR888)
-        # Scaled pixmap to QLabel size maintaining aspect ratio
-        return QPixmap.fromImage(qimg)
+        # QImage accepts raw numpy data pointer directly without copy
+        return QImage(frame.data, w, h, bytes_per_line, QImage.Format_BGR888)
 
     def update_displays(self):
         if not self.frames_a or not self.frames_b:
@@ -794,28 +825,28 @@ class NativeGUIPlayer(QMainWindow):
         disp_a = self.apply_zoom_pan(frame_a)
         disp_b = self.apply_zoom_pan(frame_b)
         
-        pix_a = self.convert_to_qpixmap(disp_a)
-        pix_b = self.convert_to_qpixmap(disp_b)
+        qimg_a = self.convert_to_qimage(disp_a)
+        qimg_b = self.convert_to_qimage(disp_b)
         
         # Apply layout configurations
         if self.layout_mode == "side-by-side":
             self.lbl_disp_a.setVisible(True)
             self.lbl_disp_b.setVisible(True)
-            self.lbl_disp_a.setPixmap(pix_a.scaled(self.lbl_disp_a.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            self.lbl_disp_b.setPixmap(pix_b.scaled(self.lbl_disp_b.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.lbl_disp_a.setImage(qimg_a)
+            self.lbl_disp_b.setImage(qimg_b)
         elif self.layout_mode == "single-a":
             self.lbl_disp_a.setVisible(True)
             self.lbl_disp_b.setVisible(False)
-            self.lbl_disp_a.setPixmap(pix_a.scaled(self.lbl_disp_a.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.lbl_disp_a.setImage(qimg_a)
         elif self.layout_mode == "single-b":
             self.lbl_disp_a.setVisible(False)
             self.lbl_disp_b.setVisible(True)
-            self.lbl_disp_b.setPixmap(pix_b.scaled(self.lbl_disp_b.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.lbl_disp_b.setImage(qimg_b)
         elif self.layout_mode == "overlay":
             self.lbl_disp_a.setVisible(True)
             self.lbl_disp_b.setVisible(False)
-            active_pix = pix_b if self.show_b_in_overlay else pix_a
-            self.lbl_disp_a.setPixmap(active_pix.scaled(self.lbl_disp_a.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            active_img = qimg_b if self.show_b_in_overlay else qimg_a
+            self.lbl_disp_a.setImage(active_img)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

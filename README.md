@@ -38,25 +38,33 @@ Ensure your browser window is focused (and not currently typing in a dropdown/se
 
 ## Option 2: Native RAM-Buffered Player (Recommended for 100% Smooth Playback)
 
-If the web browser still struggles with H.264 decoding performance at high speeds, you can use the native Python players: **`native_player.py`**, the new **`triple_player.py`**, or the full PySide6 GUI **`gui_player.py`**.
+If the web browser still struggles with H.264 decoding performance at high speeds, you can use the native Python players: **`native_player.py`**, the new **`triple_player.py`**, the PySide6 GUI **`gui_player.py`**, the GPU-accelerated **`opengl_player.py`**, or the new GPU-accelerated **`opengl_triple_player.py`**.
 
 These players **preload all 1,200 frames directly into your system RAM** (taking ~5 seconds upon selection). Once in RAM, playback is 100% fluid at any speed because it bypasses all disk read and decoding bottlenecks during playback!
 
 ### How to Run
 From the workspace folder, run:
-* **Terminal-based Dual Player**:
+* **Terminal-based Dual Player (OpenCV)**:
   ```bash
   uv run native_player.py
   ```
-* **Terminal-based Triple Player (Pyramid View)**:
+* **Terminal-based Triple Player (Pyramid View, OpenCV)**:
   ```bash
   uv run triple_player.py
   ```
-* **Full Desktop Graphical GUI Player (Recommended)**:
+* **Full Desktop Graphical GUI Player**:
   ```bash
   uv run gui_player.py
   ```
-This automatically fetches the required dependencies (`PySide6`, `opencv-python`, `numpy`) and opens the corresponding native player.
+* **Pure GPU-Accelerated GLFW/OpenGL Dual Player (Reaches 240 FPS)**:
+  ```bash
+  uv run opengl_player.py
+  ```
+* **Pure GPU-Accelerated GLFW/OpenGL Triple Player (Pyramid View, Reaches 240 FPS)**:
+  ```bash
+  uv run opengl_triple_player.py
+  ```
+This automatically fetches the required dependencies (`glfw`, `PyOpenGL`, `PySide6`, `opencv-python`, `numpy`) and opens the corresponding native player.
 
 ### Features
 * **RAM Buffering**: Loads frames into memory for perfectly smooth, stutter-free playback.
@@ -92,8 +100,7 @@ When the native window is focused:
 * **[single_player.py](single_player.py)** – Lightweight single-video diagnostic player for verifying 240Hz monitor output.
 * **[triple_player.py](triple_player.py)** – RAM-buffered OpenCV triple video player (Left: Distorted A, Center: Locked Reference, Right: Distorted C).
 * **[gui_player.py](gui_player.py)** – Full-featured PySide6 desktop GUI comparison player porting the web layout.
+* **[opengl_player.py](opengl_player.py)** – Pure GPU-accelerated GLFW/OpenGL video visualizer for stable 240 FPS rendering.
+* **[opengl_triple_player.py](opengl_triple_player.py)** – Pure GPU-accelerated GLFW/OpenGL triple video player (Pyramid View) for stable 240 FPS rendering.
+* **[profile_triple_player.py](profile_triple_player.py)** – High-precision performance profiling tool for the triple OpenGL player (saves CSV).
 * **[README.md](README.md)** – This guide.
-=======
-# videoplayer
-video player
-
