@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GAIM240 Video Quality Comparer</title>
+    <!-- Google Fonts: Outfit for headings, Inter for body -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- FontAwesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="dark-theme">
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <i class="fa-solid fa-wand-magic-sparkles logo-icon"></i>
+                <h2>GAIM240 Play</h2>
+            </div>
+            
+            <!-- Scene Selector -->
+            <div class="section-title">Select Scene</div>
+            <div class="scene-grid">
+                <button class="scene-btn active" data-scene="marbles">
+                    <i class="fa-solid fa-mountain-sun"></i> Marbles
+                </button>
+                <button class="scene-btn" data-scene="pink_room">
+                    <i class="fa-solid fa-couch"></i> Pink Room
+                </button>
+                <button class="scene-btn" data-scene="subway">
+                    <i class="fa-solid fa-train"></i> Subway
+                </button>
+                <button class="scene-btn" data-scene="zeroday">
+                    <i class="fa-solid fa-city"></i> Zeroday
+                </button>
+            </div>
+
+            <!-- Video A Selection -->
+            <div class="section-title">Video A (Base / Left)</div>
+            <div class="select-container">
+                <select id="video-select-a" class="custom-select"></select>
+            </div>
+
+            <!-- Video B Selection -->
+            <div class="section-title">Video B (Compare / Right)</div>
+            <div class="select-container">
+                <select id="video-select-b" class="custom-select"></select>
+            </div>
+
+            <!-- Quick Compare Presets -->
+            <div class="section-title">Compare Level</div>
+            <div class="level-btn-group">
+                <button class="level-btn" data-level="level0">Lvl 0</button>
+                <button class="level-btn active" data-level="level1">Lvl 1</button>
+                <button class="level-btn" data-level="level2">Lvl 2</button>
+            </div>
+
+            <!-- Information Panel -->
+            <div class="info-panel">
+                <div class="info-title"><i class="fa-solid fa-circle-info"></i> Metadata</div>
+                <div class="info-row">
+                    <span class="info-label">A File:</span>
+                    <span class="info-value" id="meta-file-a">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">B File:</span>
+                    <span class="info-value" id="meta-file-b">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Resolution:</span>
+                    <span class="info-value" id="meta-res">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Frame Time:</span>
+                    <span class="info-value" id="meta-frametime">-</span>
+                </div>
+            </div>
+
+            <!-- Help / Hotkeys -->
+            <div class="hotkeys-panel">
+                <div class="info-title"><i class="fa-solid fa-keyboard"></i> Hotkeys</div>
+                <div class="hotkey-item"><kbd>Space</kbd> Play / Pause</div>
+                <div class="hotkey-item"><kbd>←</kbd> <kbd>→</kbd> Frame Step</div>
+                <div class="hotkey-item"><kbd>Tab</kbd> Swap A/B (Hold/Toggle)</div>
+                <div class="hotkey-item"><kbd>Z</kbd> Reset Zoom & Pan</div>
+                <div class="hotkey-item"><kbd>S</kbd> Toggle Side-by-Side</div>
+                <div class="hotkey-item"><kbd>D</kbd> Toggle Split Slider</div>
+            </div>
+        </aside>
+
+        <!-- Main Viewer Content -->
+        <main class="viewer-main">
+            <!-- Top Controls Header -->
+            <header class="viewer-header">
+                <div class="layout-selector">
+                    <span class="control-label">Layout:</span>
+                    <div class="btn-group" id="layout-group">
+                        <button class="layout-btn" data-layout="single-a" title="Show Video A Only">
+                            <i class="fa-solid fa-square"></i> A
+                        </button>
+                        <button class="layout-btn" data-layout="single-b" title="Show Video B Only">
+                            <i class="fa-solid fa-square"></i> B
+                        </button>
+                        <button class="layout-btn active" data-layout="side-by-side" title="Side by Side">
+                            <i class="fa-solid fa-columns"></i> Side-by-Side
+                        </button>
+                        <button class="layout-btn" data-layout="slider" title="Split Screen Slider">
+                            <i class="fa-solid fa-arrows-left-right-to-line"></i> Split Slider
+                        </button>
+                        <button class="layout-btn" data-layout="ab-swap" title="Hold Tab / Click to Swap A/B">
+                            <i class="fa-solid fa-repeat"></i> A/B Swap
+                        </button>
+                    </div>
+                </div>
+
+                <div class="viewer-options">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="sync-zoom-chk" checked>
+                        <span class="slider-toggle"></span>
+                        <span class="toggle-label">Sync Zoom & Pan</span>
+                    </label>
+                    <button id="reset-zoom-btn" class="action-btn" title="Reset Zoom and Pan (Z)">
+                        <i class="fa-solid fa-compress"></i> Reset View
+                    </button>
+                </div>
+            </header>
+
+            <!-- Video Player Workspace -->
+            <div class="workspace-viewport" id="viewport">
+                <!-- Side-by-Side Container -->
+                <div class="player-container side-by-side-layout" id="player-container">
+                    
+                    <!-- Player A Wrapper -->
+                    <div class="video-wrapper" id="wrapper-a">
+                        <video id="video-a" preload="auto" muted loop></video>
+                        <div class="video-label">A: Base</div>
+                        <div class="zoom-indicator" id="zoom-ind-a">100%</div>
+                    </div>
+
+                    <!-- Player B Wrapper -->
+                    <div class="video-wrapper" id="wrapper-b">
+                        <video id="video-b" preload="auto" muted loop></video>
+                        <div class="video-label">B: Compare</div>
+                        <div class="zoom-indicator" id="zoom-ind-b">100%</div>
+                    </div>
+
+                    <!-- Split Slider Handle (Only shown in slider mode) -->
+                    <div class="slider-divider" id="slider-divider">
+                        <div class="slider-line"></div>
+                        <div class="slider-handle">
+                            <i class="fa-solid fa-arrows-left-right"></i>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+
+            <!-- Bottom Controller Bar -->
+            <footer class="player-controls">
+                <!-- Progress & Timeline -->
+                <div class="timeline-container">
+                    <span class="time-display" id="current-time">00:00.000</span>
+                    <div class="timeline-bar-wrapper" id="timeline-wrapper">
+                        <div class="timeline-bar" id="timeline-progress"></div>
+                        <div class="timeline-handle" id="timeline-handle"></div>
+                    </div>
+                    <span class="time-display" id="total-duration">00:00.000</span>
+                </div>
+
+                <!-- Action Button Controls -->
+                <div class="controls-actions">
+                    <div class="controls-left">
+                        <button class="control-btn" id="play-pause-btn" title="Play/Pause (Space)">
+                            <i class="fa-solid fa-play"></i>
+                        </button>
+                        <button class="control-btn" id="step-prev-btn" title="Previous Frame (Left Arrow)">
+                            <i class="fa-solid fa-backward-step"></i>
+                        </button>
+                        <button class="control-btn" id="step-next-btn" title="Next Frame (Right Arrow)">
+                            <i class="fa-solid fa-forward-step"></i>
+                        </button>
+                        <button class="control-btn" id="loop-btn" title="Toggle Loop">
+                            <i class="fa-solid fa-arrows-spin loop-active"></i>
+                        </button>
+                    </div>
+
+                    <div class="controls-center">
+                        <span class="status-msg" id="status-message">Ready</span>
+                    </div>
+
+                    <div class="controls-right">
+                        <!-- Playback Speed -->
+                        <div class="speed-control">
+                            <span class="control-label">Speed:</span>
+                            <select id="speed-select" class="custom-select speed-select">
+                                <option value="0.1">0.1x (Slow Motion)</option>
+                                <option value="0.25">0.25x</option>
+                                <option value="0.5">0.5x</option>
+                                <option value="1" selected>1.0x (Normal)</option>
+                                <option value="2">2.0x</option>
+                            </select>
+                        </div>
+
+                        <!-- Zoom Mode Label -->
+                        <div class="zoom-help">
+                            <i class="fa-solid fa-magnifying-glass"></i>
+                            <span>Scroll to zoom, drag to pan</span>
+                        </div>
+                    </div>
+                </div>
+            </footer>
+        </main>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
