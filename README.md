@@ -38,16 +38,25 @@ Ensure your browser window is focused (and not currently typing in a dropdown/se
 
 ## Option 2: Native RAM-Buffered Player (Recommended for 100% Smooth Playback)
 
-If the web browser still struggles with H.264 decoding performance at high speeds, you can use the native Python player: **`native_player.py`**.
+If the web browser still struggles with H.264 decoding performance at high speeds, you can use the native Python players: **`native_player.py`**, the new **`triple_player.py`**, or the full PySide6 GUI **`gui_player.py`**.
 
-This player **preloads all 1,200 frames of both selected videos directly into your system RAM** (taking ~5 seconds upon selection). Once in RAM, playback is 100% fluid at any speed because it bypasses all disk read and decoding bottlenecks during playback!
+These players **preload all 1,200 frames directly into your system RAM** (taking ~5 seconds upon selection). Once in RAM, playback is 100% fluid at any speed because it bypasses all disk read and decoding bottlenecks during playback!
 
 ### How to Run
 From the workspace folder, run:
-```bash
-uv run native_player.py
-```
-This automatically fetches `opencv-python` and `numpy` and opens a native GUI window.
+* **Terminal-based Dual Player**:
+  ```bash
+  uv run native_player.py
+  ```
+* **Terminal-based Triple Player (Pyramid View)**:
+  ```bash
+  uv run triple_player.py
+  ```
+* **Full Desktop Graphical GUI Player (Recommended)**:
+  ```bash
+  uv run gui_player.py
+  ```
+This automatically fetches the required dependencies (`PySide6`, `opencv-python`, `numpy`) and opens the corresponding native player.
 
 ### Features
 * **RAM Buffering**: Loads frames into memory for perfectly smooth, stutter-free playback.
@@ -81,4 +90,6 @@ When the native window is focused:
 * **[index.html](index.html)**, **[style.css](style.css)**, **[script.js](script.js)** – Web player frontend.
 * **[native_player.py](native_player.py)** – RAM-buffered OpenCV dual video player.
 * **[single_player.py](single_player.py)** – Lightweight single-video diagnostic player for verifying 240Hz monitor output.
+* **[triple_player.py](triple_player.py)** – RAM-buffered OpenCV triple video player (Left: Distorted A, Center: Locked Reference, Right: Distorted C).
+* **[gui_player.py](gui_player.py)** – Full-featured PySide6 desktop GUI comparison player porting the web layout.
 * **[README.md](README.md)** – This guide.
