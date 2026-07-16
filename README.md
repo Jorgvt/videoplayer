@@ -93,3 +93,7 @@ When the native window is focused:
 * **[triple_player.py](triple_player.py)** – RAM-buffered OpenCV triple video player (Left: Distorted A, Center: Locked Reference, Right: Distorted C).
 * **[gui_player.py](gui_player.py)** – Full-featured PySide6 desktop GUI comparison player porting the web layout.
 * **[README.md](README.md)** – This guide.
+=======
+# videoplayer
+video player
+
