@@ -362,24 +362,15 @@ class ProfileTriplePlayer:
         print("Profiling starts automatically. Please do NOT resize or interact with the window during run to preserve precision.")
         print("Press [Q] or [Esc] to stop early and print current profile data.")
         
-        # Start immediately
-        self.play_start_time = time.perf_counter()
-        self.play_start_frame_idx = 0
+        self.frame_idx = 0
+        step_count = 0
         
-        target_fps = 240.0
-        frame_time = 1.0 / target_fps
-        
-        last_render_time = time.perf_counter()
-        
-        while not glfw.window_should_close(window) and self.frame_idx < total_frames_to_profile:
+        while not glfw.window_should_close(window) and step_count < total_frames_to_profile:
             t0 = time.perf_counter() # Loop start
             
-            # 1. Update playback frame pointer & get images
-            elapsed = t0 - self.play_start_time
-            self.frame_idx = int(elapsed * target_fps)
-            if self.frame_idx >= total_frames_to_profile:
-                break
-                
+            # 1. Sequential frame indexing for profiling
+            self.frame_idx = step_count
+            
             idx_a = self.frame_idx % len(self.frames_a)
             idx_ref = self.frame_idx % len(self.frames_ref)
             idx_c = self.frame_idx % len(self.frames_c)
@@ -395,7 +386,7 @@ class ProfileTriplePlayer:
             
             t2 = time.perf_counter() # Right before buffer swap
             
-            # 3. Swap buffers (blocks here waiting for VSync)
+            # 3. Swap buffers (blocks here waiting for VSync if enabled)
             glfw.swap_buffers(window)
             
             t3 = time.perf_counter() # Immediately after swap
@@ -416,15 +407,11 @@ class ProfileTriplePlayer:
                 break
                 
             # Title bar simple FPS status
-            if self.frame_idx % 60 == 0:
-                glfw.set_window_title(window, f"GAIM240 Profiler | Progress: {self.frame_idx}/{total_frames_to_profile} frames")
+            if step_count % 60 == 0:
+                glfw.set_window_title(window, f"GAIM240 Profiler | Progress: {step_count}/{total_frames_to_profile} frames")
                 
-            # 4. High-Precision Playback Pacing
-            time_elapsed = time.perf_counter() - t0
-            time_remaining = frame_time - time_elapsed
-            if time_remaining > 0:
-                time.sleep(time_remaining)
-                
+            step_count += 1
+            
             last_render_time = time.perf_counter()
             
         glfw.destroy_window(window)
