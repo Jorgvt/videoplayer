@@ -35,6 +35,7 @@ class ProfileTriplePlayer:
         if "--no-vsync" in sys.argv:
             self.vsync = False
             
+        self.window_mode_name = "Exclusive Fullscreen"
         self.videos = {}
         self.scan_dataset()
         
@@ -127,6 +128,14 @@ class ProfileTriplePlayer:
         
         metrics = list(dict.fromkeys([v["metric"] for v in non_ref]))
         
+        # Set default distortion to temporal-resolution-multiplexing for profiling
+        target_metric = "temporal-resolution-multiplexing"
+        if target_metric in metrics:
+            self.metric_idx_a = metrics.index(target_metric)
+            self.metric_idx_c = metrics.index(target_metric)
+            self.level_idx_a = 1
+            self.level_idx_c = 2
+        
         # A (Left)
         self.metric_idx_a = self.metric_idx_a % len(metrics)
         active_metric_a = metrics[self.metric_idx_a]
@@ -142,6 +151,10 @@ class ProfileTriplePlayer:
         self.meta_c = vid_c
         
         print(f"\n--- Profiler: Preloading Scene {SCENES[self.scene_idx].upper()} ---")
+        print(f"  Left (A)  : {vid_a['filename']}")
+        print(f"  Center (R): {vid_ref['filename']}")
+        print(f"  Right (C) : {vid_c['filename']}")
+        
         self.frames_a = self.preload_video(vid_a["path"])
         self.frames_ref = self.preload_video(vid_ref["path"])
         self.frames_c = self.preload_video(vid_c["path"])
@@ -259,6 +272,7 @@ class ProfileTriplePlayer:
         
         print(f"Target Frame Rate       : 240 FPS")
         print(f"Target Frame Interval   : {target_interval_ms:.3f} ms")
+        print(f"Window Mode             : {self.window_mode_name}")
         print(f"VSync Configured        : {'ENABLED (swap_interval=1)' if self.vsync else 'DISABLED (swap_interval=0)'}")
         print(f"Total Frames Profileed  : {total_logged}")
         print("-"*55)
@@ -337,8 +351,47 @@ class ProfileTriplePlayer:
             print("Failed to initialize GLFW")
             return
             
+        borderless = "--borderless" in sys.argv
+        windowed = "--windowed" in sys.argv
+        
+        monitor = glfw.get_primary_monitor()
+        if monitor:
+            mode = glfw.get_video_mode(monitor)
+            if hasattr(mode, 'size'):
+                mon_w, mon_h = mode.size.width, mode.size.height
+            elif hasattr(mode, 'width'):
+                mon_w, mon_h = mode.width, mode.height
+            else:
+                mon_w, mon_h = mode[0], mode[1]
+        else:
+            mon_w, mon_h = 1280, 720
+            
+        glfw.default_window_hints()
         glfw.window_hint(glfw.RESIZABLE, glfw.TRUE)
-        window = glfw.create_window(1280, 720, "GAIM240 Video Quality Comparer (Triple OpenGL Profiler)", None, None)
+        glfw.window_hint(glfw.DOUBLEBUFFER, glfw.TRUE)
+        glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 2)
+        glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
+        
+        if borderless:
+            self.window_mode_name = "Borderless Windowed Fullscreen"
+            glfw.window_hint(glfw.DECORATED, glfw.FALSE)
+            window = glfw.create_window(mon_w, mon_h, "GAIM240 Video Quality Comparer (Triple OpenGL Profiler)", None, None)
+            if window:
+                glfw.set_window_pos(window, 0, 0)
+        elif windowed or not monitor:
+            self.window_mode_name = "Windowed"
+            window = glfw.create_window(1280, 720, "GAIM240 Video Quality Comparer (Triple OpenGL Profiler)", None, None)
+        else:
+            self.window_mode_name = "Exclusive Fullscreen"
+            window = glfw.create_window(mon_w, mon_h, "GAIM240 Video Quality Comparer (Triple OpenGL Profiler)", monitor, None)
+            if not window:
+                print("Exclusive fullscreen creation failed. Falling back to borderless...")
+                self.window_mode_name = "Borderless Windowed Fullscreen (Fallback)"
+                glfw.window_hint(glfw.DECORATED, glfw.FALSE)
+                window = glfw.create_window(mon_w, mon_h, "GAIM240 Video Quality Comparer (Triple OpenGL Profiler)", None, None)
+                if window:
+                    glfw.set_window_pos(window, 0, 0)
+            
         if not window:
             glfw.terminate()
             print("Failed to create GLFW window")
