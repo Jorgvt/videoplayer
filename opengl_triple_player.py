@@ -193,11 +193,13 @@ class OpenGLTriplePlayer:
     def setup_textures(self):
         glEnable(GL_TEXTURE_2D)
         self.tex_a, self.tex_ref, self.tex_c = glGenTextures(3)
-        
         for tex in [self.tex_a, self.tex_ref, self.tex_c]:
             glBindTexture(GL_TEXTURE_2D, tex)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 1280, 720, 0, GL_BGR, GL_UNSIGNED_BYTE, None)
 
     def upload_texture(self, tex_id, frame):
         h, w = frame.shape[:2]
@@ -210,7 +212,7 @@ class OpenGLTriplePlayer:
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
             
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_BGR, GL_UNSIGNED_BYTE, frame.data)
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, frame.data)
 
     def draw_quad(self, x1, y1, x2, y2):
         w_tex = 1.0 / self.zoom_scale
@@ -399,18 +401,41 @@ class OpenGLTriplePlayer:
             print("Failed to initialize GLFW")
             return
             
+        borderless = "--borderless" in sys.argv
+        windowed = "--windowed" in sys.argv
+        
+        monitor = glfw.get_primary_monitor()
+        if monitor:
+            mode = glfw.get_video_mode(monitor)
+            if hasattr(mode, 'size'):
+                mon_w, mon_h = mode.size.width, mode.size.height
+            elif hasattr(mode, 'width'):
+                mon_w, mon_h = mode.width, mode.height
+            else:
+                mon_w, mon_h = mode[0], mode[1]
+        else:
+            mon_w, mon_h = 1280, 720
+            
         glfw.default_window_hints()
         glfw.window_hint(glfw.RESIZABLE, glfw.TRUE)
         glfw.window_hint(glfw.DOUBLEBUFFER, glfw.TRUE)
         glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 2)
         glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
         
-        # 16:9 window fits 2K screen perfectly
-        window = glfw.create_window(1280, 720, "GAIM240 Video Quality Comparer (Triple OpenGL/GPU)", None, None)
-        if not window:
-            glfw.default_window_hints()
-            glfw.window_hint(glfw.RESIZABLE, glfw.TRUE)
+        if borderless:
+            glfw.window_hint(glfw.DECORATED, glfw.FALSE)
+            window = glfw.create_window(mon_w, mon_h, "GAIM240 Video Quality Comparer (Triple OpenGL/GPU)", None, None)
+            if window:
+                glfw.set_window_pos(window, 0, 0)
+        elif windowed or not monitor:
             window = glfw.create_window(1280, 720, "GAIM240 Video Quality Comparer (Triple OpenGL/GPU)", None, None)
+        else:
+            window = glfw.create_window(mon_w, mon_h, "GAIM240 Video Quality Comparer (Triple OpenGL/GPU)", monitor, None)
+            if not window:
+                glfw.window_hint(glfw.DECORATED, glfw.FALSE)
+                window = glfw.create_window(mon_w, mon_h, "GAIM240 Video Quality Comparer (Triple OpenGL/GPU)", None, None)
+                if window:
+                    glfw.set_window_pos(window, 0, 0)
             
         if not window:
             glfw.terminate()
