@@ -105,4 +105,6 @@ When the native window is focused:
 * **[profile_triple_player.py](profile_triple_player.py)** – High-precision performance profiling tool for the triple OpenGL player (saves CSV).
 * **[plot_profile.py](plot_profile.py)** – Data visualization tool that plots multi-stage rendering timelines and color-coded frame instances.
 * **[benchmark_dataset.py](benchmark_dataset.py)** – Automated dataset benchmark suite that profiles all 9 scenes, 8 distortions, and distortion levels (saves summary CSV).
+* **[run_experiment.py](run_experiment.py)** – Human visual perception experiment runner (2AFC protocol, spatial counterbalancing, keypress logging, auto-resume missing trials).
+* **[all_trials_bank.csv](all_trials_bank.csv)** – Master CSV database containing all possible 2AFC comparison pairs across the dataset.
 * **[README.md](README.md)** – This guide.
