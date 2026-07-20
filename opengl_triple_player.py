@@ -399,10 +399,19 @@ class OpenGLTriplePlayer:
             print("Failed to initialize GLFW")
             return
             
+        glfw.default_window_hints()
         glfw.window_hint(glfw.RESIZABLE, glfw.TRUE)
+        glfw.window_hint(glfw.DOUBLEBUFFER, glfw.TRUE)
+        glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 2)
+        glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
         
         # 16:9 window fits 2K screen perfectly
         window = glfw.create_window(1280, 720, "GAIM240 Video Quality Comparer (Triple OpenGL/GPU)", None, None)
+        if not window:
+            glfw.default_window_hints()
+            glfw.window_hint(glfw.RESIZABLE, glfw.TRUE)
+            window = glfw.create_window(1280, 720, "GAIM240 Video Quality Comparer (Triple OpenGL/GPU)", None, None)
+            
         if not window:
             glfw.terminate()
             print("Failed to create GLFW window")

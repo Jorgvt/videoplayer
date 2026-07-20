@@ -103,4 +103,6 @@ When the native window is focused:
 * **[opengl_player.py](opengl_player.py)** – Pure GPU-accelerated GLFW/OpenGL video visualizer for stable 240 FPS rendering.
 * **[opengl_triple_player.py](opengl_triple_player.py)** – Pure GPU-accelerated GLFW/OpenGL triple video player (Pyramid View) for stable 240 FPS rendering.
 * **[profile_triple_player.py](profile_triple_player.py)** – High-precision performance profiling tool for the triple OpenGL player (saves CSV).
+* **[plot_profile.py](plot_profile.py)** – Data visualization tool that plots multi-stage rendering timelines and color-coded frame instances.
+* **[benchmark_dataset.py](benchmark_dataset.py)** – Automated dataset benchmark suite that profiles all 9 scenes, 8 distortions, and distortion levels (saves summary CSV).
 * **[README.md](README.md)** – This guide.
