@@ -125,14 +125,17 @@ struct ExperimentResult {
 
 fn decode_video_cmd(path: String) -> Arc<Vec<FrameData>> {
     use std::process::Command;
-    let helper_path = if Path::new("rust_player/helper_decode.py").exists() {
-        "rust_player/helper_decode.py"
+    let ffmpeg_bin = if Path::new("rust_player/lib/usr/bin/ffmpeg").exists() {
+        "rust_player/lib/usr/bin/ffmpeg"
+    } else if Path::new("lib/usr/bin/ffmpeg").exists() {
+        "lib/usr/bin/ffmpeg"
     } else {
-        "helper_decode.py"
+        "ffmpeg"
     };
     
-    let output = Command::new("uv")
-        .args(["run", "python3", helper_path, &path])
+    let output = Command::new(ffmpeg_bin)
+        .env("LD_LIBRARY_PATH", "rust_player/lib/usr/lib/x86_64-linux-gnu:lib/usr/lib/x86_64-linux-gnu")
+        .args(["-hwaccel", "cuda", "-i", &path, "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"])
         .output();
         
     let mut frames_vec = Vec::new();
@@ -140,7 +143,7 @@ fn decode_video_cmd(path: String) -> Arc<Vec<FrameData>> {
         let raw = out.stdout;
         let frame_size = 1280 * 720 * 3;
         let num_frames = raw.len() / frame_size;
-        let max_frames = num_frames.min(300); // 300 frames (1.25s loopable) for 100% memory safety & instant 2-sec loading
+        let max_frames = num_frames; // Decode ALL 1,200 frames (full 5.0s video length)
         
         for i in 0..max_frames {
             let start = i * frame_size;
@@ -330,6 +333,7 @@ fn render_pyramid_subimage(
         
         gl::Viewport(x_offset, y_offset, w_view, h_view);
         
+        // High-Performance TexSubImage2D DMA Upload
         gl::BindTexture(gl::TEXTURE_2D, tex_a);
         gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, fa.width, fa.height, gl::BGR, gl::UNSIGNED_BYTE, fa.data.as_ptr() as *const _);
         
@@ -547,7 +551,7 @@ fn main() {
         let mut choice: Option<String> = None;
         let mut quit = false;
         
-        // 2. 100% Pre-Decoded RAM/VRAM Locked 239.76 FPS Presentation Loop
+        // 2. Ultra-Low Latency 239.76 FPS Presentation Loop
         while !window.should_close() && choice.is_none() && !quit {
             glfw.poll_events();
             for (_, event) in glfw::flush_messages(&events) {
