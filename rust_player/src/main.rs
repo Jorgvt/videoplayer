@@ -361,6 +361,8 @@ fn main() {
     let mut exp_mode = "full".to_string();
     let mut quick_mode = false;
     let mut borderless = false;
+    let mut no_vsync = false;
+    let mut use_pacer = false;
     
     for arg in &args[1..] {
         if arg.starts_with("--subject=") {
@@ -369,6 +371,11 @@ fn main() {
             exp_mode = arg.trim_start_matches("--mode=").to_lowercase();
         } else if arg == "--quick" {
             quick_mode = true;
+        } else if arg == "--no-vsync" || arg == "--novsync" || arg == "--uncapped" {
+            no_vsync = true;
+        } else if arg == "--pacer" || arg == "--pace-240" {
+            no_vsync = true;
+            use_pacer = true;
         } else if arg == "--borderless" {
             borderless = true;
         } else if !arg.starts_with("--") {
@@ -465,7 +472,12 @@ fn main() {
     println!("Total Active    : {}", active_trials.len());
     println!("Experiment Mode : {}", exp_mode.to_uppercase());
     println!("Playback Mode   : {}", if quick_mode { "QUICK (10 trials limit)" } else { "FULL (All trials)" });
-    println!("Architecture    : Pre-Decoded RAM/VRAM Pipelining (Locked 239.76 FPS)");
+    println!("VSync / Pacer   : {}", 
+        if use_pacer { "SOFTWARE PACER (--pacer 240.000 FPS Locked)" }
+        else if no_vsync { "UNCAPPED (--no-vsync Raw FPS Max Throughput)" }
+        else { "HARDWARE VSYNC (Sync 1 240Hz Locked)" }
+    );
+    println!("Architecture    : Pre-Decoded RAM/VRAM Pipelining");
     println!("=================================================================\n");
     
     if active_trials.is_empty() {
@@ -476,6 +488,7 @@ fn main() {
     let mut glfw = glfw::init(glfw::fail_on_errors).unwrap();
     glfw.window_hint(WindowHint::Resizable(true));
     glfw.window_hint(WindowHint::DoubleBuffer(true));
+    glfw.window_hint(WindowHint::RefreshRate(Some(240)));
     glfw.window_hint(WindowHint::ContextVersion(2, 1));
     
     let mut final_results = existing_results;
@@ -522,7 +535,11 @@ fn main() {
         
         window.make_current();
         window.set_key_polling(true);
-        glfw.set_swap_interval(glfw::SwapInterval::Sync(1));
+        if no_vsync {
+            glfw.set_swap_interval(glfw::SwapInterval::None);
+        } else {
+            glfw.set_swap_interval(glfw::SwapInterval::Sync(1));
+        }
         
         gl::load_with(|s| window.get_proc_address(s) as *const _);
         
@@ -551,7 +568,7 @@ fn main() {
         let mut choice: Option<String> = None;
         let mut quit = false;
         
-        // 2. Ultra-Low Latency 239.76 FPS Presentation Loop
+        // 2. Presentation Loop
         while !window.should_close() && choice.is_none() && !quit {
             glfw.poll_events();
             for (_, event) in glfw::flush_messages(&events) {
@@ -570,9 +587,17 @@ fn main() {
             
             render_pyramid_subimage(&mut window, &shader, tex_a, tex_ref, tex_c, fa, fref, fc);
             
-            window.swap_buffers();
             swap_timestamps.push(Instant::now());
+            window.swap_buffers();
             step += 1;
+            
+            // Global drift-compensating nanosecond frame pacer for exact 240.000 FPS (--pacer mode)
+            if use_pacer {
+                let target_time = start_time + std::time::Duration::from_nanos(step as u64 * 4_166_667);
+                while Instant::now() < target_time {
+                    std::hint::spin_loop();
+                }
+            }
         }
         
         let response_time = start_time.elapsed().as_secs_f64();

@@ -360,12 +360,16 @@ fn main() {
     let subject_id = "BENCHMARK_SUITE".to_string();
     let mut exp_mode = "intra".to_string();
     let mut no_vsync = false;
+    let mut use_pacer = false;
     
     for arg in &args[1..] {
         if arg.starts_with("--mode=") {
             exp_mode = arg.trim_start_matches("--mode=").to_lowercase();
-        } else if arg == "--no-vsync" || arg == "--novsync" {
+        } else if arg == "--no-vsync" || arg == "--novsync" || arg == "--uncapped" {
             no_vsync = true;
+        } else if arg == "--pacer" || arg == "--pace-240" {
+            no_vsync = true;
+            use_pacer = true;
         }
     }
     
@@ -428,7 +432,11 @@ fn main() {
     println!("Subject Tag     : {}", subject_id);
     println!("Benchmark Passes: {} Passes (Hands-Free Automated)", active_trials.len());
     println!("Comparison Mode : {}", exp_mode.to_uppercase());
-    println!("VSync Mode      : {}", if no_vsync { "DISABLED (--no-vsync Uncapped FPS)" } else { "ENABLED (240Hz Locked)" });
+    println!("VSync / Pacer   : {}", 
+        if use_pacer { "SOFTWARE PACER (--pacer 240.000 FPS Locked)" }
+        else if no_vsync { "UNCAPPED (--no-vsync Raw FPS Max Throughput)" }
+        else { "HARDWARE VSYNC (Sync 1 240Hz Locked)" }
+    );
     println!("Frame Target    : 1,200 Frames / 5.0s per trial");
     println!("Architecture    : Multi-Threaded ffmpeg CUDA NVDEC Engine");
     println!("=================================================================\n");
@@ -436,6 +444,7 @@ fn main() {
     let mut glfw = glfw::init(glfw::fail_on_errors).unwrap();
     glfw.window_hint(WindowHint::Resizable(true));
     glfw.window_hint(WindowHint::DoubleBuffer(true));
+    glfw.window_hint(WindowHint::RefreshRate(Some(240)));
     glfw.window_hint(WindowHint::ContextVersion(2, 1));
     
     let mut fps_results: Vec<f64> = Vec::new();
@@ -500,9 +509,9 @@ fn main() {
             glfw.poll_events();
         }
         
-        let start_time = Instant::now();
         let mut swap_timestamps: Vec<Instant> = Vec::new();
         let mut step = 0usize;
+        let t_start_presentation = Instant::now();
         
         while !window.should_close() && step < 1200 {
             glfw.poll_events();
@@ -518,17 +527,24 @@ fn main() {
             
             render_pyramid_subimage(&mut window, &shader, tex_a, tex_ref, tex_c, fa, fref, fc);
             
-            window.swap_buffers();
             swap_timestamps.push(Instant::now());
+            window.swap_buffers();
             step += 1;
+            
+            // Global drift-compensating nanosecond frame pacer for exact 240.000 FPS (--pacer mode)
+            if use_pacer {
+                let target_time = t_start_presentation + std::time::Duration::from_nanos(step as u64 * 4_166_667);
+                while Instant::now() < target_time {
+                    std::hint::spin_loop();
+                }
+            }
         }
         
+        let t_end_presentation = Instant::now();
+        let total_presentation_dur = t_end_presentation.duration_since(t_start_presentation).as_secs_f64();
         let mut actual_fps = 239.76;
-        if swap_timestamps.len() > 1 {
-            let total_dur = swap_timestamps.last().unwrap().duration_since(*swap_timestamps.first().unwrap()).as_secs_f64();
-            if total_dur > 0.0 {
-                actual_fps = (swap_timestamps.len() - 1) as f64 / total_dur;
-            }
+        if total_presentation_dur > 0.0 && step > 0 {
+            actual_fps = step as f64 / total_presentation_dur;
         }
         fps_results.push(actual_fps);
         
