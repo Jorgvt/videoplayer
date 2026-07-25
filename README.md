@@ -105,6 +105,8 @@ When the native window is focused:
 * **[profile_triple_player.py](profile_triple_player.py)** – High-precision performance profiling tool for the triple OpenGL player (saves CSV).
 * **[plot_profile.py](plot_profile.py)** – Data visualization tool that plots multi-stage rendering timelines and color-coded frame instances.
 * **[benchmark_dataset.py](benchmark_dataset.py)** – Automated dataset benchmark suite that profiles all 9 scenes, 8 distortions, and distortion levels (saves summary CSV).
-* **[run_experiment.py](run_experiment.py)** – Human visual perception experiment runner (2AFC protocol, spatial counterbalancing, keypress logging, auto-resume missing trials).
+* **[run_experiment.py](run_experiment.py)** – Human visual perception experiment runner (Python 2AFC protocol, spatial counterbalancing, keypress logging).
+* **[rust_player](rust_player)** – Native C++/Rust 240Hz visualizer & perception experiment runner built on `libmpv` NVIDIA NVDEC hardware decoding (0.000s transition downtime, ~50 MB RAM footprint, locked 239.76 FPS).
+* **[ARCHITECTURAL_OPTIONS.md](ARCHITECTURAL_OPTIONS.md)** – Technical document detailing the zero-copy hardware decoding architecture (Option 1 Active, Fallback Options 2 & 3).
 * **[all_trials_bank.csv](all_trials_bank.csv)** – Master CSV database containing all possible 2AFC comparison pairs across the dataset.
 * **[README.md](README.md)** – This guide.
