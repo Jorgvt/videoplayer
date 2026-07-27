@@ -121,7 +121,7 @@ def generate_raster_plot():
     cbar.set_label("Frame Index", fontsize=11, fontweight="bold", color="#e0e0e0")
     cbar.ax.tick_params(labelsize=10, colors="#e0e0e0")
 
-    output_png = "profile_raster_plot.png"
+    output_png = "profile_raster_plot" + str(csv_file).split('.')[0] + '.png'
     plt.savefig(output_png, dpi=300, bbox_inches="tight")
     print(f"\nMatplotlib raster plot saved to: {Path(output_png).resolve()}")
 
