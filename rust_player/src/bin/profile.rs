@@ -9,11 +9,18 @@ use std::time::Instant;
 
 use glfw::{Action, Context, Key, WindowHint};
 
+const WIDTH: usize = 1280;
+const HEIGHT: usize = 720;
+const Y_SIZE: usize = WIDTH * HEIGHT;
+const UV_WIDTH: usize = WIDTH / 2;
+const UV_HEIGHT: usize = HEIGHT / 2;
+const UV_SIZE: usize = UV_WIDTH * UV_HEIGHT;
+const FRAME_SIZE: usize = Y_SIZE + UV_SIZE + UV_SIZE; // YUV420P frame size = 1,382,400 bytes
+
 #[derive(Debug, Clone)]
-struct FrameData {
-    width: i32,
-    height: i32,
-    data: Vec<u8>,
+struct VideoStreamData {
+    num_frames: usize,
+    data: Arc<Vec<u8>>,
 }
 
 fn get_dataset_dir() -> PathBuf {
@@ -25,7 +32,7 @@ fn get_dataset_dir() -> PathBuf {
     }
 }
 
-fn decode_video_cmd(path: &Path) -> Arc<Vec<FrameData>> {
+fn decode_video_cmd(path: &Path) -> Arc<VideoStreamData> {
     use std::process::Command;
     let ffmpeg_bin = if Path::new("rust_player/lib/usr/bin/ffmpeg").exists() {
         "rust_player/lib/usr/bin/ffmpeg"
@@ -49,70 +56,33 @@ fn decode_video_cmd(path: &Path) -> Arc<Vec<FrameData>> {
             "-f",
             "rawvideo",
             "-pix_fmt",
-            "bgr24",
+            "yuv420p",
             "pipe:1",
         ])
         .output();
 
-    let mut frames_vec = Vec::new();
+    let mut raw_data = Vec::new();
     if let Ok(out) = output {
-        let raw = out.stdout;
-        let frame_size = 1280 * 720 * 3;
-        let num_frames = raw.len() / frame_size;
-
-        for i in 0..num_frames {
-            let start = i * frame_size;
-            let end = start + frame_size;
-            if end <= raw.len() {
-                frames_vec.push(FrameData {
-                    width: 1280,
-                    height: 720,
-                    data: raw[start..end].to_vec(),
-                });
-            }
-        }
+        raw_data = out.stdout;
     }
 
-    if frames_vec.is_empty() {
-        // CPU fallback if NVDEC / CUDA flags failed
-        let output_cpu = Command::new(ffmpeg_bin)
-            .args([
-                "-i",
-                &path_str,
-                "-f",
-                "rawvideo",
-                "-pix_fmt",
-                "bgr24",
-                "pipe:1",
-            ])
-            .output();
-        if let Ok(out) = output_cpu {
-            let raw = out.stdout;
-            let frame_size = 1280 * 720 * 3;
-            let num_frames = raw.len() / frame_size;
-            for i in 0..num_frames {
-                let start = i * frame_size;
-                let end = start + frame_size;
-                if end <= raw.len() {
-                    frames_vec.push(FrameData {
-                        width: 1280,
-                        height: 720,
-                        data: raw[start..end].to_vec(),
-                    });
-                }
-            }
-        }
-    }
+    let num_frames = raw_data.len() / FRAME_SIZE;
 
-    Arc::new(frames_vec)
+    Arc::new(VideoStreamData {
+        num_frames,
+        data: Arc::new(raw_data),
+    })
 }
 
-struct QuadShader {
+struct YuvQuadShader {
     program: u32,
     vbo: u32,
+    u_y_loc: i32,
+    u_u_loc: i32,
+    u_v_loc: i32,
 }
 
-impl QuadShader {
+impl YuvQuadShader {
     fn new() -> Self {
         let vert_code = CString::new(
             "
@@ -131,10 +101,20 @@ impl QuadShader {
         let frag_code = CString::new(
             "
             #version 120
-            uniform sampler2D u_texture;
+            uniform sampler2D u_tex_y;
+            uniform sampler2D u_tex_u;
+            uniform sampler2D u_tex_v;
             varying vec2 v_texcoord;
             void main() {
-                gl_FragColor = texture2D(u_texture, v_texcoord);
+                float y = texture2D(u_tex_y, v_texcoord).r;
+                float u = texture2D(u_tex_u, v_texcoord).r - 0.5;
+                float v = texture2D(u_tex_v, v_texcoord).r - 0.5;
+                
+                float r = y + 1.402 * v;
+                float g = y - 0.344136 * u - 0.714136 * v;
+                float b = y + 1.772 * u;
+                
+                gl_FragColor = vec4(r, g, b, 1.0);
             }
         ",
         )
@@ -160,11 +140,21 @@ impl QuadShader {
             let mut vbo = 0;
             gl::GenBuffers(1, &mut vbo);
 
-            QuadShader { program, vbo }
+            let u_y_loc = gl::GetUniformLocation(program, CString::new("u_tex_y").unwrap().as_ptr());
+            let u_u_loc = gl::GetUniformLocation(program, CString::new("u_tex_u").unwrap().as_ptr());
+            let u_v_loc = gl::GetUniformLocation(program, CString::new("u_tex_v").unwrap().as_ptr());
+
+            YuvQuadShader {
+                program,
+                vbo,
+                u_y_loc,
+                u_u_loc,
+                u_v_loc,
+            }
         }
     }
 
-    fn draw_quad(&self, x1: f32, y1: f32, x2: f32, y2: f32, tex_id: u32) {
+    fn draw_quad(&self, x1: f32, y1: f32, x2: f32, y2: f32, tex_y: u32, tex_u: u32, tex_v: u32) {
         #[repr(C)]
         struct Vertex {
             pos: [f32; 2],
@@ -182,7 +172,18 @@ impl QuadShader {
 
         unsafe {
             gl::UseProgram(self.program);
-            gl::BindTexture(gl::TEXTURE_2D, tex_id);
+
+            gl::ActiveTexture(gl::TEXTURE0);
+            gl::BindTexture(gl::TEXTURE_2D, tex_y);
+            gl::Uniform1i(self.u_y_loc, 0);
+
+            gl::ActiveTexture(gl::TEXTURE1);
+            gl::BindTexture(gl::TEXTURE_2D, tex_u);
+            gl::Uniform1i(self.u_u_loc, 1);
+
+            gl::ActiveTexture(gl::TEXTURE2);
+            gl::BindTexture(gl::TEXTURE_2D, tex_v);
+            gl::Uniform1i(self.u_v_loc, 2);
 
             gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
             gl::BufferData(
@@ -221,42 +222,102 @@ impl QuadShader {
     }
 }
 
-fn create_preallocated_textures() -> (u32, u32, u32) {
+struct YuvTextures {
+    y: u32,
+    u: u32,
+    v: u32,
+}
+
+fn create_yuv_textures() -> YuvTextures {
     let mut textures = [0u32; 3];
     unsafe {
         gl::Enable(gl::TEXTURE_2D);
         gl::GenTextures(3, textures.as_mut_ptr());
-        for &tex in &textures {
-            gl::BindTexture(gl::TEXTURE_2D, tex);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
-            gl::TexImage2D(
-                gl::TEXTURE_2D,
-                0,
-                gl::RGB as i32,
-                1280,
-                720,
-                0,
-                gl::BGR,
-                gl::UNSIGNED_BYTE,
-                std::ptr::null(),
-            );
-        }
+
+        // Y Texture (1280x720)
+        gl::BindTexture(gl::TEXTURE_2D, textures[0]);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
+        gl::TexImage2D(
+            gl::TEXTURE_2D, 0, gl::RED as i32, WIDTH as i32, HEIGHT as i32, 0,
+            gl::RED, gl::UNSIGNED_BYTE, std::ptr::null()
+        );
+
+        // U Texture (640x360)
+        gl::BindTexture(gl::TEXTURE_2D, textures[1]);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
+        gl::TexImage2D(
+            gl::TEXTURE_2D, 0, gl::RED as i32, UV_WIDTH as i32, UV_HEIGHT as i32, 0,
+            gl::RED, gl::UNSIGNED_BYTE, std::ptr::null()
+        );
+
+        // V Texture (640x360)
+        gl::BindTexture(gl::TEXTURE_2D, textures[2]);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
+        gl::TexImage2D(
+            gl::TEXTURE_2D, 0, gl::RED as i32, UV_WIDTH as i32, UV_HEIGHT as i32, 0,
+            gl::RED, gl::UNSIGNED_BYTE, std::ptr::null()
+        );
     }
-    (textures[0], textures[1], textures[2])
+    YuvTextures {
+        y: textures[0],
+        u: textures[1],
+        v: textures[2],
+    }
 }
 
-fn render_pyramid(
+fn upload_yuv_frame(tex: &YuvTextures, raw_data: &[u8], frame_idx: usize) {
+    let frame_offset = frame_idx * FRAME_SIZE;
+    if frame_offset + FRAME_SIZE > raw_data.len() {
+        return;
+    }
+
+    let y_ptr = &raw_data[frame_offset];
+    let u_ptr = &raw_data[frame_offset + Y_SIZE];
+    let v_ptr = &raw_data[frame_offset + Y_SIZE + UV_SIZE];
+
+    unsafe {
+        gl::ActiveTexture(gl::TEXTURE0);
+        gl::BindTexture(gl::TEXTURE_2D, tex.y);
+        gl::TexSubImage2D(
+            gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32,
+            gl::RED, gl::UNSIGNED_BYTE, y_ptr as *const _ as *const _,
+        );
+
+        gl::ActiveTexture(gl::TEXTURE1);
+        gl::BindTexture(gl::TEXTURE_2D, tex.u);
+        gl::TexSubImage2D(
+            gl::TEXTURE_2D, 0, 0, 0, UV_WIDTH as i32, UV_HEIGHT as i32,
+            gl::RED, gl::UNSIGNED_BYTE, u_ptr as *const _ as *const _,
+        );
+
+        gl::ActiveTexture(gl::TEXTURE2);
+        gl::BindTexture(gl::TEXTURE_2D, tex.v);
+        gl::TexSubImage2D(
+            gl::TEXTURE_2D, 0, 0, 0, UV_WIDTH as i32, UV_HEIGHT as i32,
+            gl::RED, gl::UNSIGNED_BYTE, v_ptr as *const _ as *const _,
+        );
+    }
+}
+
+fn render_pyramid_yuv(
     window: &mut glfw::Window,
-    shader: &QuadShader,
-    tex_a: u32,
-    tex_ref: u32,
-    tex_c: u32,
-    fa: &FrameData,
-    fref: &FrameData,
-    fc: &FrameData,
+    shader: &YuvQuadShader,
+    tex_a: &YuvTextures,
+    tex_ref: &YuvTextures,
+    tex_c: &YuvTextures,
+    data_a: &VideoStreamData,
+    data_ref: &VideoStreamData,
+    data_c: &VideoStreamData,
+    frame_idx: usize,
 ) {
     let (w, h) = window.get_framebuffer_size();
     let target_aspect = 16.0 / 9.0;
@@ -270,6 +331,14 @@ fn render_pyramid(
     let x_offset = (w - w_view) / 2;
     let y_offset = (h - h_view) / 2;
 
+    let idx_a = if data_a.num_frames > 0 { frame_idx % data_a.num_frames } else { 0 };
+    let idx_ref = if data_ref.num_frames > 0 { frame_idx % data_ref.num_frames } else { 0 };
+    let idx_c = if data_c.num_frames > 0 { frame_idx % data_c.num_frames } else { 0 };
+
+    upload_yuv_frame(tex_a, &data_a.data, idx_a);
+    upload_yuv_frame(tex_ref, &data_ref.data, idx_ref);
+    upload_yuv_frame(tex_c, &data_c.data, idx_c);
+
     unsafe {
         gl::Viewport(0, 0, w, h);
         gl::ClearColor(0.02, 0.02, 0.03, 1.0);
@@ -277,48 +346,9 @@ fn render_pyramid(
 
         gl::Viewport(x_offset, y_offset, w_view, h_view);
 
-        gl::BindTexture(gl::TEXTURE_2D, tex_a);
-        gl::TexSubImage2D(
-            gl::TEXTURE_2D,
-            0,
-            0,
-            0,
-            fa.width,
-            fa.height,
-            gl::BGR,
-            gl::UNSIGNED_BYTE,
-            fa.data.as_ptr() as *const _,
-        );
-
-        gl::BindTexture(gl::TEXTURE_2D, tex_ref);
-        gl::TexSubImage2D(
-            gl::TEXTURE_2D,
-            0,
-            0,
-            0,
-            fref.width,
-            fref.height,
-            gl::BGR,
-            gl::UNSIGNED_BYTE,
-            fref.data.as_ptr() as *const _,
-        );
-
-        gl::BindTexture(gl::TEXTURE_2D, tex_c);
-        gl::TexSubImage2D(
-            gl::TEXTURE_2D,
-            0,
-            0,
-            0,
-            fc.width,
-            fc.height,
-            gl::BGR,
-            gl::UNSIGNED_BYTE,
-            fc.data.as_ptr() as *const _,
-        );
-
-        shader.draw_quad(-0.5, 0.0, 0.5, 1.0, tex_ref);
-        shader.draw_quad(-1.0, -1.0, 0.0, 0.0, tex_a);
-        shader.draw_quad(0.0, -1.0, 1.0, 0.0, tex_c);
+        shader.draw_quad(-0.5, 0.0, 0.5, 1.0, tex_ref.y, tex_ref.u, tex_ref.v);
+        shader.draw_quad(-1.0, -1.0, 0.0, 0.0, tex_a.y, tex_a.u, tex_a.v);
+        shader.draw_quad(0.0, -1.0, 1.0, 0.0, tex_c.y, tex_c.u, tex_c.v);
     }
 }
 
@@ -458,7 +488,9 @@ fn main() {
     println!("  Center (Ref)   : {:?}", ref_path.file_name().unwrap_or_default());
     println!("  Right Video (C): {:?}", level2_path.file_name().unwrap_or_default());
 
-    println!("\n[1/2] Preloading video frames into RAM (CUDA NVDEC / FFMPEG)...");
+    println!("\n[1/2] Preloading video frames into RAM (YUV420P Optimized Pipeline)...");
+    let t_preload_start = Instant::now();
+
     let p_a = level1_path.clone();
     let p_ref = ref_path.clone();
     let p_c = level2_path.clone();
@@ -467,18 +499,22 @@ fn main() {
     let h_ref = thread::spawn(move || decode_video_cmd(&p_ref));
     let h_c = thread::spawn(move || decode_video_cmd(&p_c));
 
-    let frames_a = h_a.join().unwrap();
-    let frames_ref = h_ref.join().unwrap();
-    let frames_c = h_c.join().unwrap();
+    let stream_a = h_a.join().unwrap();
+    let stream_ref = h_ref.join().unwrap();
+    let stream_c = h_c.join().unwrap();
 
-    println!("Successfully loaded frames: Video A={}, Ref={}, Video C={}", frames_a.len(), frames_ref.len(), frames_c.len());
+    let t_preload_elapsed = t_preload_start.elapsed().as_secs_f64();
+    println!(
+        "Preload complete in {:.3} s! Stream A: {} frames, Ref: {} frames, Stream C: {} frames",
+        t_preload_elapsed, stream_a.num_frames, stream_ref.num_frames, stream_c.num_frames
+    );
 
-    if frames_a.is_empty() || frames_ref.is_empty() || frames_c.is_empty() {
+    if stream_a.num_frames == 0 || stream_ref.num_frames == 0 || stream_c.num_frames == 0 {
         println!("Error: Failed to decode frames for one or more video streams.");
         return;
     }
 
-    let total_frames = frames_a.len().min(frames_ref.len()).min(frames_c.len());
+    let total_frames = stream_a.num_frames.min(stream_ref.num_frames).min(stream_c.num_frames);
     if total_frames == 0 {
         println!("Error: No valid frame sequence decoded.");
         return;
@@ -550,8 +586,10 @@ fn main() {
 
     gl::load_with(|s| window.get_proc_address(s) as *const _);
 
-    let shader = QuadShader::new();
-    let (tex_a, tex_ref, tex_c) = create_preallocated_textures();
+    let shader = YuvQuadShader::new();
+    let tex_a = create_yuv_textures();
+    let tex_ref = create_yuv_textures();
+    let tex_c = create_yuv_textures();
 
     let mut records: Vec<FrameProfileRecord> = Vec::with_capacity(total_frames);
     let start_instant = Instant::now();
@@ -566,19 +604,21 @@ fn main() {
     while !window.should_close() && step_count < total_frames {
         let t0 = Instant::now();
 
-        // 1. Image retrieval from RAM
-        let idx_a = step_count % frames_a.len();
-        let idx_ref = step_count % frames_ref.len();
-        let idx_c = step_count % frames_c.len();
-
-        let fa = &frames_a[idx_a];
-        let fref = &frames_ref[idx_ref];
-        let fc = &frames_c[idx_c];
-
+        // 1. Image retrieval from contiguous RAM block
         let t1 = Instant::now();
 
-        // 2. Render & submit GPU draw commands
-        render_pyramid(&mut window, &shader, tex_a, tex_ref, tex_c, fa, fref, fc);
+        // 2. Upload YUV textures & render on GPU
+        render_pyramid_yuv(
+            &mut window,
+            &shader,
+            &tex_a,
+            &tex_ref,
+            &tex_c,
+            &stream_a,
+            &stream_ref,
+            &stream_c,
+            step_count,
+        );
 
         let t2 = Instant::now();
 
