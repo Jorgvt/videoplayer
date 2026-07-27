@@ -165,10 +165,8 @@ class PerceptionExperiment:
         else:
             df_bank = pd.read_csv(TRIAL_BANK_CSV)
             
-        # Filter by Target Scenes
         df_bank = df_bank[df_bank["Scene"].isin(self.target_scenes)].copy()
         
-        # Filter by Experiment Mode
         if self.exp_mode == "intra":
             df_bank = df_bank[df_bank["ComparisonType"] == "INTRA-DISTORTION"].copy()
         elif self.exp_mode == "inter":
@@ -176,11 +174,9 @@ class PerceptionExperiment:
             
         records = df_bank.to_dict("records")
         
-        # Shuffle reproducible for each subject ID
         random.seed(hash(self.subject_id))
         random.shuffle(records)
         
-        # Counterbalance spatial side (randomly assign Vid1 to Left vs Right)
         for i, row in enumerate(records):
             flip_side = random.choice([True, False])
             
@@ -212,24 +208,6 @@ class PerceptionExperiment:
                 "left_vid": left_vid,
                 "right_vid": right_vid
             })
-            
-        if self.quick_mode:
-            self.trials = self.trials[:10]  # Quick dry run
-
-    def preload_video(self, path, max_frames=None):
-        cap = cv2.VideoCapture(path)
-        frames = []
-        count = 0
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frames.append(frame)
-            count += 1
-            if max_frames and count >= max_frames:
-                break
-        cap.release()
-        return frames
 
     def create_isolated_window(self, title):
         monitor = glfw.get_primary_monitor()
@@ -335,49 +313,67 @@ class PerceptionExperiment:
         self.upload_texture(tex_ref, frame_ref)
         self.upload_texture(tex_c, frame_c)
         
-        # Reference (top-center)
         glBindTexture(GL_TEXTURE_2D, tex_ref)
         self.draw_quad(-0.5, 0.0, 0.5, 1.0)
         
-        # Left (A)
         glBindTexture(GL_TEXTURE_2D, tex_a)
         self.draw_quad(-1.0, -1.0, 0.0, 0.0)
         
-        # Right (C)
         glBindTexture(GL_TEXTURE_2D, tex_c)
         self.draw_quad(0.0, -1.0, 1.0, 0.0)
 
     def run_trial(self, trial_info):
         self.current_trial_choice = None
         
-        frames_left = self.preload_video(trial_info["left_vid"]["path"])
-        frames_ref = self.preload_video(trial_info["ref_vid"]["path"])
-        frames_right = self.preload_video(trial_info["right_vid"]["path"])
+        # On-the-fly Video Streaming (ZERO startup preloading delay!)
+        cap_left = cv2.VideoCapture(trial_info["left_vid"]["path"])
+        cap_ref = cv2.VideoCapture(trial_info["ref_vid"]["path"])
+        cap_right = cv2.VideoCapture(trial_info["right_vid"]["path"])
         
         title = f"Perception Experiment | Subject: {self.subject_id} | Trial {trial_info['trial_idx']}/{len(self.trials)}"
         res_win = self.create_isolated_window(title)
         if not res_win:
+            cap_left.release()
+            cap_ref.release()
+            cap_right.release()
             return None
         window, tex_a, tex_ref, tex_c = res_win
         
-        # 60 frame warm-up phase
-        for step in range(60):
-            fa = frames_left[step % len(frames_left)]
-            fref = frames_ref[step % len(frames_ref)]
-            fc = frames_right[step % len(frames_right)]
-            self.render_pyramid(window, tex_a, tex_ref, tex_c, fa, fref, fc)
+        # Read Frame 0 for static 60-frame warm-up (X11 unredirection & 240Hz sync)
+        ret_l, fa_0 = cap_left.read()
+        ret_r, fref_0 = cap_ref.read()
+        ret_c, fc_0 = cap_right.read()
+        
+        if not (ret_l and ret_r and ret_c):
+            print("Error reading video streams.")
+            glfw.destroy_window(window)
+            return None
+            
+        for _ in range(60):
+            self.render_pyramid(window, tex_a, tex_ref, tex_c, fa_0, fref_0, fc_0)
             glfw.swap_buffers(window)
             glfw.poll_events()
             
         start_time = time.perf_counter()
         swap_timestamps = []
-        step = 0
         
+        # On-the-fly 240Hz streaming loop
         while not self.current_trial_choice and not self.quit_requested:
-            fa = frames_left[step % len(frames_left)]
-            fref = frames_ref[step % len(frames_ref)]
-            fc = frames_right[step % len(frames_right)]
+            ret_l, fa = cap_left.read()
+            ret_r, fref = cap_ref.read()
+            ret_c, fc = cap_right.read()
             
+            # Loop seamless when reaching end of video
+            if not ret_l or fa is None:
+                cap_left.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                _, fa = cap_left.read()
+            if not ret_r or fref is None:
+                cap_ref.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                _, fref = cap_ref.read()
+            if not ret_c or fc is None:
+                cap_right.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                _, fc = cap_right.read()
+                
             self.render_pyramid(window, tex_a, tex_ref, tex_c, fa, fref, fc)
             
             glfw.swap_buffers(window)
@@ -389,11 +385,12 @@ class PerceptionExperiment:
                 self.quit_requested = True
                 break
                 
-            step += 1
-            
         response_time = time.perf_counter() - start_time
         choice = self.current_trial_choice
         
+        cap_left.release()
+        cap_ref.release()
+        cap_right.release()
         glfw.destroy_window(window)
         
         timestamps = np.array(swap_timestamps)
@@ -401,9 +398,8 @@ class PerceptionExperiment:
         mean_int = np.mean(intervals_ms) if len(intervals_ms) > 0 else 0.0
         actual_fps = 1000.0 / mean_int if mean_int > 0 else 0.0
         
-        del frames_left, frames_ref, frames_right
         gc.collect()
-        time.sleep(0.2)
+        time.sleep(0.1)
         
         if self.quit_requested or not choice:
             return None
@@ -444,7 +440,6 @@ class PerceptionExperiment:
         out_dir.mkdir(exist_ok=True)
         csv_file = out_dir / f"experiment_{self.subject_id}.csv"
         
-        # Check for existing results to resume missing trials
         completed_master_ids = set()
         if csv_file.exists():
             try:
@@ -455,8 +450,9 @@ class PerceptionExperiment:
             except Exception as e:
                 print(f"Warning: Could not read existing file {csv_file}: {e}")
                 
-        # Filter out trials that have already been answered
         active_trials = [t for t in self.trials if t["master_trial_id"] not in completed_master_ids]
+        if self.quick_mode:
+            active_trials = active_trials[:10]
         
         print("\n" + "="*65)
         print(f"      GAIM240 HUMAN VISUAL PERCEPTION EXPERIMENT SUITE       ")
@@ -497,7 +493,6 @@ class PerceptionExperiment:
                 
             self.results.append(res)
             
-            # Save CSV incrementally after every trial
             df = pd.DataFrame(self.results)
             df.to_csv(csv_file, index=False)
             
