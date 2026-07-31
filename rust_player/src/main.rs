@@ -513,11 +513,11 @@ fn main() {
         .into_iter()
         .filter(|t| {
             if exp_mode == "inter" {
-                t.comparison_type == "INTER-METRIC"
-            } else {
+                t.comparison_type == "INTER-DISTORTION"
+            } else if exp_mode == "intra" {
                 t.comparison_type == "INTRA-DISTORTION"
-                    && ((t.vid1_level == "level1" && t.vid2_level == "level2")
-                        || (t.vid1_level == "level2" && t.vid2_level == "level1"))
+            } else {
+                true
             }
         })
         .collect();
