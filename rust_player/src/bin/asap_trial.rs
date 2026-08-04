@@ -62,6 +62,8 @@ fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
         .args([
             "-hwaccel",
             "cuda",
+            "-c:v",
+            "hevc_cuvid",
             "-i",
             &path,
             "-f",

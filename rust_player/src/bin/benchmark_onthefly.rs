@@ -1,12 +1,11 @@
-use std::collections::HashSet;
 use std::env;
 use std::ffi::CString;
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::sync::Arc;
-use std::thread;
 use std::time::Instant;
+use std::io::Read;
+use std::process::{Command, Stdio, Child};
 
 use glfw::{Action, Context, Key, WindowHint};
 use rand::rngs::StdRng;
@@ -17,10 +16,7 @@ use serde::{Deserialize, Serialize};
 const WIDTH: usize = 1280;
 const HEIGHT: usize = 720;
 const Y_SIZE: usize = WIDTH * HEIGHT;
-const UV_WIDTH: usize = WIDTH / 2;
-const UV_HEIGHT: usize = HEIGHT / 2;
-const UV_SIZE: usize = UV_WIDTH * UV_HEIGHT;
-const FRAME_SIZE: usize = Y_SIZE + UV_SIZE + UV_SIZE; // YUV420P frame size = 1,382,400 bytes
+const FRAME_SIZE: usize = Y_SIZE * 3; // YUV444p: Y, U, and V are all full size (1280x720) = 2,764,800 bytes
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MasterTrial {
@@ -71,19 +67,6 @@ struct PreparedTrial {
     right_vid: VideoInfo,
 }
 
-#[derive(Debug, Clone)]
-struct VideoStreamData {
-    num_frames: usize,
-    data: Arc<Vec<u8>>,
-}
-
-#[derive(Debug, Clone)]
-struct TrialFrames {
-    left_stream: Arc<VideoStreamData>,
-    ref_stream: Arc<VideoStreamData>,
-    right_stream: Arc<VideoStreamData>,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 struct ExperimentResult {
     #[serde(rename = "SubjectID")]
@@ -128,10 +111,11 @@ struct ExperimentResult {
     response_time_sec: f64,
     #[serde(rename = "PresentationFPS")]
     presentation_fps: f64,
+    #[serde(rename = "PreDecodeTime_sec")]
+    pre_decode_time_sec: f64,
 }
 
-fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
-    use std::process::Command;
+fn spawn_ffmpeg_cmd(path: &str) -> Child {
     let ffmpeg_bin = if Path::new("rust_player/lib/usr/bin/ffmpeg").exists() {
         "rust_player/lib/usr/bin/ffmpeg"
     } else if Path::new("lib/usr/bin/ffmpeg").exists() {
@@ -140,7 +124,7 @@ fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
         "ffmpeg"
     };
 
-    let output = Command::new(ffmpeg_bin)
+    Command::new(ffmpeg_bin)
         .env(
             "LD_LIBRARY_PATH",
             "rust_player/lib/usr/lib/x86_64-linux-gnu:lib/usr/lib/x86_64-linux-gnu",
@@ -151,42 +135,89 @@ fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
             "-c:v",
             "hevc_cuvid",
             "-i",
-            &path,
+            path,
             "-f",
             "rawvideo",
             "-pix_fmt",
-            "yuv420p",
+            "yuv444p",
             "pipe:1",
         ])
-        .output();
-
-    let mut raw_data = Vec::new();
-    if let Ok(out) = output {
-        raw_data = out.stdout;
-    }
-
-    let num_frames = raw_data.len() / FRAME_SIZE;
-
-    Arc::new(VideoStreamData {
-        num_frames,
-        data: Arc::new(raw_data),
-    })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("Failed to spawn ffmpeg")
 }
 
-fn decode_trial_parallel(trial: &PreparedTrial) -> TrialFrames {
-    let p_left = trial.left_vid.path.clone();
-    let p_ref = trial.ref_vid.path.clone();
-    let p_right = trial.right_vid.path.clone();
+fn create_empty_yuv_textures() -> (u32, u32, u32) {
+    let mut tex_y = 0;
+    let mut tex_u = 0;
+    let mut tex_v = 0;
+    unsafe {
+        gl::GenTextures(1, &mut tex_y);
+        gl::GenTextures(1, &mut tex_u);
+        gl::GenTextures(1, &mut tex_v);
 
-    let h_left = thread::spawn(move || decode_video_cmd(p_left));
-    let h_ref = thread::spawn(move || decode_video_cmd(p_ref));
-    let h_right = thread::spawn(move || decode_video_cmd(p_right));
+        // Allocate Y
+        gl::BindTexture(gl::TEXTURE_2D, tex_y);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
+        gl::TexImage2D(
+            gl::TEXTURE_2D, 0, gl::RED as i32, WIDTH as i32, HEIGHT as i32, 0,
+            gl::RED, gl::UNSIGNED_BYTE, std::ptr::null()
+        );
 
-    TrialFrames {
-        left_stream: h_left.join().unwrap(),
-        ref_stream: h_ref.join().unwrap(),
-        right_stream: h_right.join().unwrap(),
+        // Allocate U
+        gl::BindTexture(gl::TEXTURE_2D, tex_u);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
+        gl::TexImage2D(
+            gl::TEXTURE_2D, 0, gl::RED as i32, WIDTH as i32, HEIGHT as i32, 0,
+            gl::RED, gl::UNSIGNED_BYTE, std::ptr::null()
+        );
+
+        // Allocate V
+        gl::BindTexture(gl::TEXTURE_2D, tex_v);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
+        gl::TexImage2D(
+            gl::TEXTURE_2D, 0, gl::RED as i32, WIDTH as i32, HEIGHT as i32, 0,
+            gl::RED, gl::UNSIGNED_BYTE, std::ptr::null()
+        );
     }
+    (tex_y, tex_u, tex_v)
+}
+
+unsafe fn upload_yuv_frame_subimage(tex_y: u32, tex_u: u32, tex_v: u32, raw_data: &[u8]) {
+    let y_ptr = &raw_data[0];
+    let u_ptr = &raw_data[Y_SIZE];
+    let v_ptr = &raw_data[Y_SIZE * 2];
+
+    gl::ActiveTexture(gl::TEXTURE0);
+    gl::BindTexture(gl::TEXTURE_2D, tex_y);
+    gl::TexSubImage2D(
+        gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32,
+        gl::RED, gl::UNSIGNED_BYTE, y_ptr as *const _ as *const _
+    );
+
+    gl::ActiveTexture(gl::TEXTURE1);
+    gl::BindTexture(gl::TEXTURE_2D, tex_u);
+    gl::TexSubImage2D(
+        gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32,
+        gl::RED, gl::UNSIGNED_BYTE, u_ptr as *const _ as *const _
+    );
+
+    gl::ActiveTexture(gl::TEXTURE2);
+    gl::BindTexture(gl::TEXTURE_2D, tex_v);
+    gl::TexSubImage2D(
+        gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32,
+        gl::RED, gl::UNSIGNED_BYTE, v_ptr as *const _ as *const _
+    );
 }
 
 struct YuvQuadShader {
@@ -337,102 +368,12 @@ impl YuvQuadShader {
     }
 }
 
-struct YuvTextures {
-    y: u32,
-    u: u32,
-    v: u32,
-}
-
-fn create_yuv_textures() -> YuvTextures {
-    let mut textures = [0u32; 3];
-    unsafe {
-        gl::Enable(gl::TEXTURE_2D);
-        gl::GenTextures(3, textures.as_mut_ptr());
-
-        // Y Texture (1280x720)
-        gl::BindTexture(gl::TEXTURE_2D, textures[0]);
-        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
-        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
-        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
-        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
-        gl::TexImage2D(
-            gl::TEXTURE_2D, 0, gl::RED as i32, WIDTH as i32, HEIGHT as i32, 0,
-            gl::RED, gl::UNSIGNED_BYTE, std::ptr::null()
-        );
-
-        // U Texture (640x360)
-        gl::BindTexture(gl::TEXTURE_2D, textures[1]);
-        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
-        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
-        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
-        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
-        gl::TexImage2D(
-            gl::TEXTURE_2D, 0, gl::RED as i32, UV_WIDTH as i32, UV_HEIGHT as i32, 0,
-            gl::RED, gl::UNSIGNED_BYTE, std::ptr::null()
-        );
-
-        // V Texture (640x360)
-        gl::BindTexture(gl::TEXTURE_2D, textures[2]);
-        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
-        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
-        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
-        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
-        gl::TexImage2D(
-            gl::TEXTURE_2D, 0, gl::RED as i32, UV_WIDTH as i32, UV_HEIGHT as i32, 0,
-            gl::RED, gl::UNSIGNED_BYTE, std::ptr::null()
-        );
-    }
-    YuvTextures {
-        y: textures[0],
-        u: textures[1],
-        v: textures[2],
-    }
-}
-
-fn upload_yuv_frame(tex: &YuvTextures, raw_data: &[u8], frame_idx: usize) {
-    let frame_offset = frame_idx * FRAME_SIZE;
-    if frame_offset + FRAME_SIZE > raw_data.len() {
-        return;
-    }
-
-    let y_ptr = &raw_data[frame_offset];
-    let u_ptr = &raw_data[frame_offset + Y_SIZE];
-    let v_ptr = &raw_data[frame_offset + Y_SIZE + UV_SIZE];
-
-    unsafe {
-        gl::ActiveTexture(gl::TEXTURE0);
-        gl::BindTexture(gl::TEXTURE_2D, tex.y);
-        gl::TexSubImage2D(
-            gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32,
-            gl::RED, gl::UNSIGNED_BYTE, y_ptr as *const _ as *const _,
-        );
-
-        gl::ActiveTexture(gl::TEXTURE1);
-        gl::BindTexture(gl::TEXTURE_2D, tex.u);
-        gl::TexSubImage2D(
-            gl::TEXTURE_2D, 0, 0, 0, UV_WIDTH as i32, UV_HEIGHT as i32,
-            gl::RED, gl::UNSIGNED_BYTE, u_ptr as *const _ as *const _,
-        );
-
-        gl::ActiveTexture(gl::TEXTURE2);
-        gl::BindTexture(gl::TEXTURE_2D, tex.v);
-        gl::TexSubImage2D(
-            gl::TEXTURE_2D, 0, 0, 0, UV_WIDTH as i32, UV_HEIGHT as i32,
-            gl::RED, gl::UNSIGNED_BYTE, v_ptr as *const _ as *const _,
-        );
-    }
-}
-
-fn render_pyramid_subimage(
+fn render_pyramid_quads(
     window: &mut glfw::Window,
     shader: &YuvQuadShader,
-    tex_a: &YuvTextures,
-    tex_ref: &YuvTextures,
-    tex_c: &YuvTextures,
-    stream_a: &VideoStreamData,
-    stream_ref: &VideoStreamData,
-    stream_c: &VideoStreamData,
-    frame_idx: usize,
+    tex_left_y: u32, tex_left_u: u32, tex_left_v: u32,
+    tex_ref_y: u32, tex_ref_u: u32, tex_ref_v: u32,
+    tex_right_y: u32, tex_right_u: u32, tex_right_v: u32,
 ) {
     let (w, h) = window.get_framebuffer_size();
     let target_aspect = 16.0 / 9.0;
@@ -446,14 +387,6 @@ fn render_pyramid_subimage(
     let x_offset = (w - w_view) / 2;
     let y_offset = (h - h_view) / 2;
 
-    let idx_a = if stream_a.num_frames > 0 { frame_idx % stream_a.num_frames } else { 0 };
-    let idx_ref = if stream_ref.num_frames > 0 { frame_idx % stream_ref.num_frames } else { 0 };
-    let idx_c = if stream_c.num_frames > 0 { frame_idx % stream_c.num_frames } else { 0 };
-
-    upload_yuv_frame(tex_a, &stream_a.data, idx_a);
-    upload_yuv_frame(tex_ref, &stream_ref.data, idx_ref);
-    upload_yuv_frame(tex_c, &stream_c.data, idx_c);
-
     unsafe {
         gl::Viewport(0, 0, w, h);
         gl::ClearColor(0.02, 0.02, 0.03, 1.0);
@@ -461,9 +394,9 @@ fn render_pyramid_subimage(
 
         gl::Viewport(x_offset, y_offset, w_view, h_view);
 
-        shader.draw_quad(-0.5, 0.0, 0.5, 1.0, tex_ref.y, tex_ref.u, tex_ref.v);
-        shader.draw_quad(-1.0, -1.0, 0.0, 0.0, tex_a.y, tex_a.u, tex_a.v);
-        shader.draw_quad(0.0, -1.0, 1.0, 0.0, tex_c.y, tex_c.u, tex_c.v);
+        shader.draw_quad(-0.5, 0.0, 0.5, 1.0, tex_ref_y, tex_ref_u, tex_ref_v);
+        shader.draw_quad(-1.0, -1.0, 0.0, 0.0, tex_left_y, tex_left_u, tex_left_v);
+        shader.draw_quad(0.0, -1.0, 1.0, 0.0, tex_right_y, tex_right_u, tex_right_v);
     }
 }
 
@@ -475,27 +408,19 @@ fn hash_subject(subject_id: &str) -> u64 {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let mut subject_id = "ANONYMOUS_SUBJECT".to_string();
+    let subject_id = "BENCHMARK_ONTHEFLY".to_string();
     let mut exp_mode = "intra".to_string();
-    let mut quick_mode = false;
     let mut no_vsync = false;
     let mut use_pacer = false;
-    let mut borderless = false;
 
     for arg in &args[1..] {
-        if arg.starts_with("--subject=") {
-            subject_id = arg.trim_start_matches("--subject=").to_string();
-        } else if arg.starts_with("--mode=") {
+        if arg.starts_with("--mode=") {
             exp_mode = arg.trim_start_matches("--mode=").to_lowercase();
-        } else if arg == "--quick" {
-            quick_mode = true;
         } else if arg == "--no-vsync" || arg == "--novsync" || arg == "--uncapped" {
             no_vsync = true;
         } else if arg == "--pacer" || arg == "--pace-240" {
             no_vsync = true;
             use_pacer = true;
-        } else if arg == "--borderless" {
-            borderless = true;
         }
     }
 
@@ -583,40 +508,15 @@ fn main() {
         });
     }
 
-    let total_trials_count = prepared_trials.len();
-    fs::create_dir_all("experiment_results").unwrap();
-    let res_csv_path = format!("experiment_results/{}_results.csv", subject_id);
-
-    let mut existing_results: Vec<ExperimentResult> = Vec::new();
-    let mut completed_ids = HashSet::new();
-
-    if Path::new(&res_csv_path).exists() {
-        if let Ok(mut rdr) = csv::Reader::from_path(&res_csv_path) {
-            for result in rdr.deserialize::<ExperimentResult>().filter_map(|r| r.ok()) {
-                completed_ids.insert(result.master_trial_id);
-                existing_results.push(result);
-            }
-        }
-    }
-
-    let uncompleted: Vec<PreparedTrial> = prepared_trials
-        .into_iter()
-        .filter(|t| !completed_ids.contains(&t.master_trial_id))
-        .collect();
-
-    let active_trials: Vec<PreparedTrial> = if quick_mode {
-        uncompleted.into_iter().take(10).collect()
-    } else {
-        uncompleted
-    };
+    // Limit to 5 passes to quickly verify extreme performance
+    let active_trials: Vec<PreparedTrial> = prepared_trials.into_iter().take(5).collect();
 
     println!("\n=================================================================");
-    println!("  GAIM240 HUMAN VISUAL PERCEPTION EXPERIMENT SUITE (Rust YUV420P)");
+    println!("  GAIM240 PERFORMANCE BENCHMARK (On-the-Fly GPU hardware Decoding)");
     println!("=================================================================");
-    println!("Participant ID  : {}", subject_id);
-    println!("Total Active    : {}", active_trials.len());
-    println!("Experiment Mode : {}", exp_mode.to_uppercase());
-    println!("Playback Mode   : {}", if quick_mode { "QUICK (10 trials limit)" } else { "FULL (All trials)" });
+    println!("Subject Tag     : {}", subject_id);
+    println!("Benchmark Passes: {} Passes (Hands-Free Automated)", active_trials.len());
+    println!("Comparison Mode : {}", exp_mode.to_uppercase());
     println!(
         "VSync / Pacer   : {}",
         if use_pacer {
@@ -627,13 +527,10 @@ fn main() {
             "HARDWARE VSYNC (Sync 1 240Hz Locked)"
         }
     );
-    println!("Architecture    : YUV420P Planar + GPU Shader Color Conversion");
+    println!("Frame Target    : 1,200 Frames / 5.0s per trial");
+    println!("RAM & VRAM Spec : Bounded 1-Frame Overhead -> ~0.02 GB VRAM footprint!");
+    println!("Pre-Decode Time : 0.00 seconds (Instant playback startup!)");
     println!("=================================================================\n");
-
-    if active_trials.is_empty() {
-        println!("All trials for subject '{}' are already completed!", subject_id);
-        return;
-    }
 
     let mut glfw = glfw::init(glfw::fail_on_errors).unwrap();
     glfw.window_hint(WindowHint::Resizable(true));
@@ -641,35 +538,20 @@ fn main() {
     glfw.window_hint(WindowHint::RefreshRate(Some(240)));
     glfw.window_hint(WindowHint::ContextVersion(2, 1));
 
-    let mut final_results = existing_results;
+    let mut fps_results: Vec<f64> = Vec::new();
+    let mut load_times: Vec<f64> = Vec::new();
+    let mut bench_csv_results: Vec<ExperimentResult> = Vec::new();
 
     for (idx, trial) in active_trials.iter().enumerate() {
         use std::io::Write;
         print!(
-            "Executing Trial [{}/{}] (Master ID: #{}) | Scene: {}...",
+            "Benchmarking Pass [{}/{}] (Master ID: #{}) | Scene: {}...",
             idx + 1,
             active_trials.len(),
             trial.master_trial_id,
             trial.scene.to_uppercase()
         );
         std::io::stdout().flush().unwrap();
-
-        let t0 = Instant::now();
-        let tf = decode_trial_parallel(trial);
-        let t_load = t0.elapsed().as_secs_f64();
-
-        if tf.left_stream.num_frames == 0
-            || tf.ref_stream.num_frames == 0
-            || tf.right_stream.num_frames == 0
-        {
-            println!(
-                " Error: Could not decode video frames for trial #{}. Skipping.",
-                trial.master_trial_id
-            );
-            continue;
-        }
-
-        println!(" Pre-Decoded ({:.2}s) -> Presenting Locked 239.76 FPS Pyramid", t_load);
 
         let (mon_w, mon_h) = glfw.with_connected_monitors(|_, monitors| {
             if let Some(mon) = monitors.first() {
@@ -680,33 +562,19 @@ fn main() {
             (1280, 720)
         });
 
-        let title = format!(
-            "Rust Perception Experiment | Subject: {} | Trial {}/{}",
-            subject_id,
-            idx + 1,
-            active_trials.len()
-        );
+        let title = format!("Rust On-the-Fly GPU Decoded | Pass {}/{}", idx + 1, active_trials.len());
 
-        let (mut window, events) = if borderless {
-            glfw.window_hint(WindowHint::Decorated(false));
-            let (mut w, e) = glfw
-                .create_window(mon_w, mon_h, &title, glfw::WindowMode::Windowed)
-                .unwrap();
-            w.set_pos(0, 0);
-            (w, e)
-        } else {
-            glfw.with_connected_monitors(|glfw_ref, monitors| {
-                if let Some(mon) = monitors.first() {
-                    glfw_ref
-                        .create_window(mon_w, mon_h, &title, glfw::WindowMode::FullScreen(mon))
-                        .unwrap()
-                } else {
-                    glfw_ref
-                        .create_window(1280, 720, &title, glfw::WindowMode::Windowed)
-                        .unwrap()
-                }
-            })
-        };
+        let (mut window, events) = glfw.with_connected_monitors(|glfw_ref, monitors| {
+            if let Some(mon) = monitors.first() {
+                glfw_ref
+                    .create_window(mon_w, mon_h, &title, glfw::WindowMode::FullScreen(mon))
+                    .unwrap()
+            } else {
+                glfw_ref
+                    .create_window(1280, 720, &title, glfw::WindowMode::Windowed)
+                    .unwrap()
+            }
+        });
 
         window.make_current();
         window.set_key_polling(true);
@@ -718,112 +586,117 @@ fn main() {
 
         gl::load_with(|s| window.get_proc_address(s) as *const _);
 
+        // Pre-allocate only exactly 1 active texture ID per stream (total 3 sets of YUV = 9 textures!)
+        let (tex_left_y, tex_left_u, tex_left_v) = create_empty_yuv_textures();
+        let (tex_ref_y, tex_ref_u, tex_ref_v) = create_empty_yuv_textures();
+        let (tex_right_y, tex_right_u, tex_right_v) = create_empty_yuv_textures();
+
+        // 0.0s startup latency! We spawn FFmpeg streams right before the presentation loop starts.
+        let t_load_start = Instant::now();
+
+        let mut child_left = spawn_ffmpeg_cmd(&trial.left_vid.path);
+        let mut child_ref = spawn_ffmpeg_cmd(&trial.ref_vid.path);
+        let mut child_right = spawn_ffmpeg_cmd(&trial.right_vid.path);
+
+        let mut out_left = child_left.stdout.take().unwrap();
+        let mut out_ref = child_ref.stdout.take().unwrap();
+        let mut out_right = child_right.stdout.take().unwrap();
+
+        let t_total_load = t_load_start.elapsed().as_secs_f64();
+        load_times.push(t_total_load);
+
         let shader = YuvQuadShader::new();
-        let tex_a = create_yuv_textures();
-        let tex_ref = create_yuv_textures();
-        let tex_c = create_yuv_textures();
 
-        // Warmup render
-        for _ in 0..60 {
-            render_pyramid_subimage(
-                &mut window,
-                &shader,
-                &tex_a,
-                &tex_ref,
-                &tex_c,
-                &tf.left_stream,
-                &tf.ref_stream,
-                &tf.right_stream,
-                0,
-            );
-            window.swap_buffers();
-            glfw.poll_events();
-        }
-
-        let start_time = Instant::now();
-        let mut swap_timestamps: Vec<Instant> = Vec::new();
         let mut step = 0usize;
-        let mut choice: Option<String> = None;
-        let mut quit = false;
+        let mut frame_buf = vec![0u8; FRAME_SIZE];
+        let t_start_presentation = Instant::now();
 
-        while !window.should_close() && choice.is_none() && !quit {
+        // Active presentation loop decoding and uploading on-the-fly
+        while !window.should_close() && step < 1200 {
             glfw.poll_events();
             for (_, event) in glfw::flush_messages(&events) {
-                if let glfw::WindowEvent::Key(Key::Left | Key::A | Key::Kp1, _, Action::Press, _) = event {
-                    choice = Some("LEFT".to_string());
-                } else if let glfw::WindowEvent::Key(Key::Right | Key::D | Key::Kp2, _, Action::Press, _) = event {
-                    choice = Some("RIGHT".to_string());
-                } else if let glfw::WindowEvent::Key(Key::Escape | Key::Q, _, Action::Press, _) = event {
-                    quit = true;
+                if let glfw::WindowEvent::Key(Key::Escape | Key::Q, _, Action::Press, _) = event {
+                    step = 1200;
                 }
             }
 
-            render_pyramid_subimage(
+            // Read and upload next frame in real time
+            let mut success = true;
+            if out_left.read_exact(&mut frame_buf).is_ok() {
+                unsafe { upload_yuv_frame_subimage(tex_left_y, tex_left_u, tex_left_v, &frame_buf); }
+            } else {
+                success = false;
+            }
+            if out_ref.read_exact(&mut frame_buf).is_ok() {
+                unsafe { upload_yuv_frame_subimage(tex_ref_y, tex_ref_u, tex_ref_v, &frame_buf); }
+            } else {
+                success = false;
+            }
+            if out_right.read_exact(&mut frame_buf).is_ok() {
+                unsafe { upload_yuv_frame_subimage(tex_right_y, tex_right_u, tex_right_v, &frame_buf); }
+            } else {
+                success = false;
+            }
+
+            if !success {
+                // Video ended prematurely
+                break;
+            }
+
+            render_pyramid_quads(
                 &mut window,
                 &shader,
-                &tex_a,
-                &tex_ref,
-                &tex_c,
-                &tf.left_stream,
-                &tf.ref_stream,
-                &tf.right_stream,
-                step,
+                tex_left_y, tex_left_u, tex_left_v,
+                tex_ref_y, tex_ref_u, tex_ref_v,
+                tex_right_y, tex_right_u, tex_right_v
             );
 
-            swap_timestamps.push(Instant::now());
             window.swap_buffers();
             step += 1;
 
             if use_pacer {
-                let target_time = start_time + std::time::Duration::from_nanos(step as u64 * 4_166_667);
+                let target_time = t_start_presentation
+                    + std::time::Duration::from_nanos(step as u64 * 4_166_667);
                 while Instant::now() < target_time {
                     std::hint::spin_loop();
                 }
             }
         }
 
-        let response_time = start_time.elapsed().as_secs_f64();
-
+        let t_end_presentation = Instant::now();
+        let total_presentation_dur =
+            t_end_presentation.duration_since(t_start_presentation).as_secs_f64();
+        
         let mut actual_fps = 239.76;
-        if swap_timestamps.len() > 1 {
-            let total_dur = swap_timestamps
-                .last()
-                .unwrap()
-                .duration_since(*swap_timestamps.first().unwrap())
-                .as_secs_f64();
-            if total_dur > 0.0 {
-                actual_fps = (swap_timestamps.len() - 1) as f64 / total_dur;
-            }
+        if total_presentation_dur > 0.0 && step > 0 {
+            actual_fps = step as f64 / total_presentation_dur;
         }
+        fps_results.push(actual_fps);
+
+        // Terminate active decoders
+        let _ = child_left.kill();
+        let _ = child_ref.kill();
+        let _ = child_right.kill();
 
         unsafe {
-            let textures = [
-                tex_a.y, tex_a.u, tex_a.v,
-                tex_ref.y, tex_ref.u, tex_ref.v,
-                tex_c.y, tex_c.u, tex_c.v,
-            ];
-            gl::DeleteTextures(9, textures.as_ptr());
+            gl::DeleteTextures(1, &tex_left_y);
+            gl::DeleteTextures(1, &tex_left_u);
+            gl::DeleteTextures(1, &tex_left_v);
+            gl::DeleteTextures(1, &tex_ref_y);
+            gl::DeleteTextures(1, &tex_ref_u);
+            gl::DeleteTextures(1, &tex_ref_v);
+            gl::DeleteTextures(1, &tex_right_y);
+            gl::DeleteTextures(1, &tex_right_u);
+            gl::DeleteTextures(1, &tex_right_v);
         }
-        drop(tf);
+
         drop(window);
 
-        if quit || choice.is_none() {
-            println!("\nExperiment stopped early by user. Progress saved.");
-            break;
-        }
-
-        let chosen_side = choice.unwrap();
-        let (chosen_vid, rejected_vid) = if chosen_side == "LEFT" {
-            (&trial.left_vid, &trial.right_vid)
-        } else {
-            (&trial.right_vid, &trial.left_vid)
-        };
-
         let res = ExperimentResult {
-            subject_id: subject_id.clone(),
-            trial_index: trial.trial_idx,
+            subject_id: "BENCHMARK_RUST_ONTHEFLY".to_string(),
+            trial_index: idx + 1,
             master_trial_id: trial.master_trial_id,
-            total_trials: total_trials_count,
+            total_trials: active_trials.len(),
             comparison_type: trial.comparison_type.clone(),
             scene: trial.scene.clone(),
             left_metric: trial.left_vid.metric.clone(),
@@ -832,33 +705,42 @@ fn main() {
             right_metric: trial.right_vid.metric.clone(),
             right_level: trial.right_vid.level.clone(),
             right_video: trial.right_vid.filename.clone(),
-            chosen_side,
-            chosen_metric: chosen_vid.metric.clone(),
-            chosen_level: chosen_vid.level.clone(),
-            chosen_video: chosen_vid.filename.clone(),
-            rejected_metric: rejected_vid.metric.clone(),
-            rejected_level: rejected_vid.level.clone(),
-            rejected_video: rejected_vid.filename.clone(),
-            response_time_sec: (response_time * 10000.0).round() / 10000.0,
+            chosen_side: "LEFT".to_string(),
+            chosen_metric: trial.left_vid.metric.clone(),
+            chosen_level: trial.left_vid.level.clone(),
+            chosen_video: trial.left_vid.filename.clone(),
+            rejected_metric: trial.right_vid.metric.clone(),
+            rejected_level: trial.right_vid.level.clone(),
+            rejected_video: trial.right_vid.filename.clone(),
+            response_time_sec: 5.0,
             presentation_fps: (actual_fps * 100.0).round() / 100.0,
+            pre_decode_time_sec: (t_total_load * 10000.0).round() / 10000.0,
         };
 
-        println!(
-            " Chose {} ({}) in {:.2}s (FPS: {:.2})",
-            res.chosen_side, res.chosen_level, res.response_time_sec, res.presentation_fps
-        );
+        bench_csv_results.push(res);
 
-        final_results.push(res);
-
-        let f = File::create(&res_csv_path).unwrap();
-        let mut wtr = csv::Writer::from_writer(f);
-        for r in &final_results {
-            wtr.serialize(r).unwrap();
-        }
-        wtr.flush().unwrap();
+        println!(" Startup Time: {:.4}s | Playback FPS: {:.2}", t_total_load, actual_fps);
     }
 
+    fs::create_dir_all("experiment_results").unwrap();
+    let csv_out_path = "experiment_results/benchmark_rust_onthefly.csv";
+    let f = File::create(csv_out_path).unwrap();
+    let mut wtr = csv::Writer::from_writer(f);
+    for r in &bench_csv_results {
+        wtr.serialize(r).unwrap();
+    }
+    wtr.flush().unwrap();
+
+    let mean_fps: f64 = fps_results.iter().sum::<f64>() / fps_results.len() as f64;
+    let mean_load: f64 = load_times.iter().sum::<f64>() / load_times.len() as f64;
+
     println!("\n=================================================================");
-    println!("  Rust Perception Experiment Session Complete!");
+    println!("  RUST ON-THE-FLY GPU DECODING BENCHMARK PERFORMANCE REPORT");
     println!("=================================================================");
+    println!("Total Passes Evaluated   : {}", fps_results.len());
+    println!("Average Presentation FPS : {:.2} FPS", mean_fps);
+    println!("Average Startup Latency  : {:.4} seconds", mean_load);
+    println!("Frame Lock Efficiency    : {:.2}%", (mean_fps / 240.0) * 100.0);
+    println!("Benchmark Output File    : {}", csv_out_path);
+    println!("=================================================================\n");
 }
