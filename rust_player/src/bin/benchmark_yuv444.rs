@@ -139,6 +139,16 @@ struct ExperimentResult {
 }
 
 fn spawn_ffmpeg_cmd(path: &str) -> Child {
+    #[cfg(target_os = "windows")]
+    let ffmpeg_bin = if std::path::Path::new("rust_player/lib/windows/bin/ffmpeg.exe").exists() {
+        "rust_player/lib/windows/bin/ffmpeg.exe"
+    } else if std::path::Path::new("lib/windows/bin/ffmpeg.exe").exists() {
+        "lib/windows/bin/ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
+
+    #[cfg(not(target_os = "windows"))]
     let ffmpeg_bin = if Path::new("rust_player/lib/usr/bin/ffmpeg").exists() {
         "rust_player/lib/usr/bin/ffmpeg"
     } else if Path::new("lib/usr/bin/ffmpeg").exists() {
@@ -147,12 +157,22 @@ fn spawn_ffmpeg_cmd(path: &str) -> Child {
         "ffmpeg"
     };
 
-    Command::new(ffmpeg_bin)
-        .env(
-            "LD_LIBRARY_PATH",
-            "rust_player/lib/usr/lib/x86_64-linux-gnu:lib/usr/lib/x86_64-linux-gnu",
-        )
-        .args([
+    let mut cmd = Command::new(ffmpeg_bin);
+
+    #[cfg(target_os = "linux")]
+    cmd.env(
+        "LD_LIBRARY_PATH",
+        "rust_player/lib/usr/lib/x86_64-linux-gnu:lib/usr/lib/x86_64-linux-gnu",
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        let dll_dir = "rust_player/lib/windows/bin";
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        cmd.env("PATH", format!("{};{}", dll_dir, current_path));
+    }
+
+    cmd.args([
             "-hwaccel",
             "cuda",
             "-c:v",

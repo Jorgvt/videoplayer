@@ -34,6 +34,16 @@ fn get_dataset_dir() -> PathBuf {
 
 fn decode_video_cmd(path: &Path) -> Arc<VideoStreamData> {
     use std::process::Command;
+    #[cfg(target_os = "windows")]
+    let ffmpeg_bin = if std::path::Path::new("rust_player/lib/windows/bin/ffmpeg.exe").exists() {
+        "rust_player/lib/windows/bin/ffmpeg.exe"
+    } else if std::path::Path::new("lib/windows/bin/ffmpeg.exe").exists() {
+        "lib/windows/bin/ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
+
+    #[cfg(not(target_os = "windows"))]
     let ffmpeg_bin = if Path::new("rust_player/lib/usr/bin/ffmpeg").exists() {
         "rust_player/lib/usr/bin/ffmpeg"
     } else if Path::new("lib/usr/bin/ffmpeg").exists() {
@@ -42,19 +52,29 @@ fn decode_video_cmd(path: &Path) -> Arc<VideoStreamData> {
         "ffmpeg"
     };
 
-    let path_str = path.to_string_lossy();
-    let output = Command::new(ffmpeg_bin)
-        .env(
-            "LD_LIBRARY_PATH",
-            "rust_player/lib/usr/lib/x86_64-linux-gnu:lib/usr/lib/x86_64-linux-gnu",
-        )
+    let mut cmd = Command::new(ffmpeg_bin);
+
+    #[cfg(target_os = "linux")]
+    cmd.env(
+        "LD_LIBRARY_PATH",
+        "rust_player/lib/usr/lib/x86_64-linux-gnu:lib/usr/lib/x86_64-linux-gnu",
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        let dll_dir = "rust_player/lib/windows/bin";
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        cmd.env("PATH", format!("{};{}", dll_dir, current_path));
+    }
+
+    let output = cmd
         .args([
             "-hwaccel",
             "cuda",
             "-c:v",
             "hevc_cuvid",
             "-i",
-            &path_str,
+            &path.to_string_lossy(),
             "-f",
             "rawvideo",
             "-pix_fmt",

@@ -24,6 +24,8 @@ import sys
 import time
 from pathlib import Path
 
+from platform_utils import get_dataset_dir, set_native_lib_env, set_native_bin_env
+
 import numpy as np
 
 # Add local asap/python directory to import path
@@ -143,7 +145,7 @@ def run_single_rust_trial(subject_id: str, trial_num: int, scene: str, ref_path:
         cmd.append("--borderless")
 
     env = os.environ.copy()
-    env["LD_LIBRARY_PATH"] = "rust_player/lib/usr/lib/x86_64-linux-gnu:" + env.get("LD_LIBRARY_PATH", "")
+    set_native_lib_env(env)  # sets LD_LIBRARY_PATH on Linux, PATH on Windows
 
     proc = subprocess.run(cmd, cwd=".", env=env, capture_output=True, text=True)
 
@@ -172,7 +174,7 @@ def run_single_nvis_trial(subject_id: str, trial_num: int, scene: str, ref_path:
     """
     nvis_bin = Path(__file__).parent.parent / "userstudy_v0.2_linux" / "userstudy_v0.2" / "userstudy_patched"
     if not nvis_bin.exists():
-        nvis_bin = Path("/home/jv495/Developer/userstudy_v0.2_linux/userstudy_v0.2/userstudy_patched")
+        nvis_bin = Path(os.environ.get("NVIS_BIN", "/home/jv495/Developer/userstudy_v0.2_linux/userstudy_v0.2/userstudy_patched"))
         
     if not nvis_bin.exists():
         print(f"Error: Nvidia player not found at {nvis_bin.resolve()}", flush=True)
@@ -180,9 +182,8 @@ def run_single_nvis_trial(subject_id: str, trial_num: int, scene: str, ref_path:
 
     # Configure env to find dynamic libraries and ffmpeg
     env = os.environ.copy()
-    wrapper_bin_dir = str((Path(__file__).parent / "bin").resolve())
-    env["PATH"] = wrapper_bin_dir + ":" + str((Path(__file__).parent / "rust_player" / "lib" / "usr" / "bin").resolve()) + ":" + env.get("PATH", "")
-    env["LD_LIBRARY_PATH"] = str((Path(__file__).parent / "rust_player" / "lib" / "usr" / "lib" / "x86_64-linux-gnu").resolve()) + ":" + env.get("LD_LIBRARY_PATH", "")
+    set_native_bin_env(env)   # prepends bundled ffmpeg/bin dir to PATH (cross-platform)
+    set_native_lib_env(env)   # sets LD_LIBRARY_PATH on Linux, PATH on Windows
 
     # Commands for userstudy
     cmd = [

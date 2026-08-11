@@ -9,10 +9,12 @@ import queue
 import threading
 from pathlib import Path
 
+from platform_utils import get_dataset_dir, set_native_lib_env, set_native_bin_env
+
 # Paths to the player and bank
 NVIS_BIN = Path("../userstudy_v0.2_linux/userstudy_v0.2/userstudy_patched").resolve()
 BANK_PATH = Path("all_trials_bank.csv").resolve()
-DATASET_DIR = Path("/home/jv495/Datasets/GAIM240").resolve()
+DATASET_DIR = get_dataset_dir()
 RUST_LIB_DIR = Path("rust_player/lib").resolve()
 
 SCENES = ["attic", "bistro_exterior", "bistro_interior", "classroom", "landscape", "marbles", "pink_room", "subway", "zeroday"]
@@ -72,9 +74,8 @@ def run_trial(trial_idx, total_trials, trial, vsync_mode, playback_fps):
 
     # Set up environment variables
     env = os.environ.copy()
-    wrapper_bin_dir = str(Path(__file__).parent.resolve() / "bin")
-    env["PATH"] = wrapper_bin_dir + ":" + str(RUST_LIB_DIR / "usr" / "bin") + ":" + env.get("PATH", "")
-    env["LD_LIBRARY_PATH"] = str(RUST_LIB_DIR / "usr" / "lib" / "x86_64-linux-gnu") + ":" + env.get("LD_LIBRARY_PATH", "")
+    set_native_bin_env(env)   # prepends bundled bin dir to PATH (cross-platform)
+    set_native_lib_env(env)   # sets LD_LIBRARY_PATH on Linux, PATH on Windows
     env["__GL_SHOW_GRAPHICS_OSD"] = "1"
 
     # Nvidia player command

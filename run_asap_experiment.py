@@ -24,6 +24,8 @@ import sys
 import time
 from pathlib import Path
 
+from platform_utils import get_dataset_dir, set_native_lib_env
+
 import numpy as np
 
 # Add local asap/python directory to import path
@@ -143,7 +145,7 @@ def run_single_rust_trial(subject_id: str, trial_num: int, scene: str, ref_path:
         cmd.append("--borderless")
 
     env = os.environ.copy()
-    env["LD_LIBRARY_PATH"] = "rust_player/lib/usr/lib/x86_64-linux-gnu:" + env.get("LD_LIBRARY_PATH", "")
+    set_native_lib_env(env)  # sets LD_LIBRARY_PATH on Linux, PATH on Windows
 
     proc = subprocess.run(cmd, cwd=".", env=env, capture_output=True, text=True)
 
