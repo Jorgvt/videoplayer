@@ -1,0 +1,2 @@
+TrialIndex,MasterTrialID,Scene,ComparisonType,LeftVideo,RightVideo,VSync,PreDecodeTime_sec,PlaybackFPS
+1,1,attic,INTRA-DISTORTION,attic_dlss_rr_level0.mp4,attic_dlss_rr_level1.mp4,off,37.5461,1600.0

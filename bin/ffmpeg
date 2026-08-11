@@ -1,0 +1,3 @@
+#!/bin/bash
+LIBS="/home/jv495/Developer/videoplayer/rust_player/lib/usr/lib/x86_64-linux-gnu"
+exec env LD_LIBRARY_PATH="$LIBS" /home/jv495/Developer/videoplayer/bin/ffmpeg_bin "$@"
