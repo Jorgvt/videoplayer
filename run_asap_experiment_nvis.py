@@ -121,14 +121,15 @@ def run_single_rust_trial(subject_id: str, trial_num: int, scene: str, ref_path:
     if temp_res.exists():
         temp_res.unlink()
 
-    rust_bin = Path("rust_player/target/release/asap_trial")
+    exe_suffix = ".exe" if sys.platform == "win32" else ""
+    rust_bin = Path(f"rust_player/target/release/asap_trial{exe_suffix}")
     if not rust_bin.exists():
-        rust_bin = Path("rust_player/target/debug/asap_trial")
+        rust_bin = Path(f"rust_player/target/debug/asap_trial{exe_suffix}")
 
     if not rust_bin.exists():
         print("Building asap_trial binary...", flush=True)
         subprocess.run(["cargo", "build", "--release", "--bin", "asap_trial"], cwd="rust_player", check=True)
-        rust_bin = Path("rust_player/target/release/asap_trial")
+        rust_bin = Path(f"rust_player/target/release/asap_trial{exe_suffix}")
 
     cmd = [
         str(rust_bin.resolve()),
@@ -270,7 +271,7 @@ def main():
     parser.add_argument("--no-pacer", action="store_false", dest="pacer", help="Disable 240Hz software frame pacer")
     parser.add_argument("--no-vsync", "--uncapped", action="store_true", help="Disable VSync for uncapped maximum presentation throughput")
     parser.add_argument("--borderless", action="store_true", help="Enable borderless windowed mode")
-    parser.add_argument("--dataset", type=str, default="/home/jv495/Datasets/GAIM240", help="Path to GAIM240 dataset")
+    parser.add_argument("--dataset", type=str, default=str(get_dataset_dir()), help="Path to GAIM240 dataset")
     parser.add_argument("--bank", type=str, default="all_trials_bank.csv", help="Path to master trials bank CSV")
     parser.add_argument("--player", type=str, choices=["rust", "nvis"], default="rust",
                         help="Video player engine to use: 'rust' (default native player) or 'nvis' (Nvidia player)")
@@ -390,7 +391,7 @@ def main():
                 args.subject, completed_trials + 1, display_scene, ref_path, left_cond, right_cond
             )
         else:
-            print("  [Presenting 240Hz Pyramid Window - Waiting for participant response (A/D or ←/→)]...", flush=True)
+            print("  [Presenting 240Hz Pyramid Window - Waiting for participant response (A/D or Left/Right Arrow)]...", flush=True)
             choice, resp_time, fps = run_single_rust_trial(
                 args.subject, completed_trials + 1, display_scene, ref_path, left_cond, right_cond,
                 pacer=args.pacer, no_vsync=args.no_vsync, borderless=args.borderless

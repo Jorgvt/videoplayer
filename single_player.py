@@ -11,8 +11,10 @@ import time
 import cv2
 from pathlib import Path
 
+from platform_utils import get_dataset_dir
+
 # Config
-DATASET_DIR = Path("/home/jv495/Datasets/GAIM240").resolve()
+DATASET_DIR = get_dataset_dir()
 DEFAULT_VIDEO = "marbles_reference.mp4"
 
 def main():

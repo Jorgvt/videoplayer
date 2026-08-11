@@ -18,8 +18,10 @@ import numpy as np
 from pathlib import Path
 from OpenGL.GL import *
 
+from platform_utils import get_dataset_dir
+
 # Paths
-DATASET_DIR = Path("/home/jv495/Datasets/GAIM240").resolve()
+DATASET_DIR = get_dataset_dir()
 SCENES = ["marbles", "pink_room", "subway", "zeroday"]
 
 class ProfileTriplePlayer:

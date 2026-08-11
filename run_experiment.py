@@ -22,7 +22,9 @@ import pandas as pd
 from pathlib import Path
 from OpenGL.GL import *
 
-DATASET_DIR = Path("/home/jv495/Datasets/GAIM240").resolve()
+from platform_utils import get_dataset_dir
+
+DATASET_DIR = get_dataset_dir()
 SCENES = ["attic", "bistro_exterior", "bistro_interior", "classroom", "landscape", "marbles", "pink_room", "subway", "zeroday"]
 TRIAL_BANK_CSV = Path("all_trials_bank.csv")
 

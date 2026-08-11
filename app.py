@@ -15,15 +15,11 @@ from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="Video Quality Dataset Player")
 
+from platform_utils import get_dataset_dir
+
 # Constants
 WORKSPACE_DIR = Path(__file__).parent.resolve()
-# The dataset path is relative to the workspace, i.e., ../../Datasets/GAIM240/
-DATASET_DIR = (WORKSPACE_DIR / ".." / ".." / "Datasets" / "GAIM240").resolve()
-
-# Fallback: if the relative path doesn't exist, search in common locations
-if not DATASET_DIR.exists():
-    # Try absolute path on the user's system
-    DATASET_DIR = Path("/home/jv495/Developer/Datasets/GAIM240").resolve()
+DATASET_DIR = get_dataset_dir()
 
 print(f"Loading videos from: {DATASET_DIR}")
 

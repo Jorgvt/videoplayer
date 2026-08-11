@@ -24,12 +24,25 @@ struct VideoStreamData {
 }
 
 fn get_dataset_dir() -> PathBuf {
-    let default_path = PathBuf::from("/home/jv495/Datasets/GAIM240");
-    if default_path.exists() {
-        default_path
-    } else {
-        PathBuf::from("GAIM240")
+    if let Ok(env_val) = std::env::var("GAIM240_DATASET_DIR") {
+        let p = PathBuf::from(env_val);
+        if p.exists() {
+            return p;
+        }
     }
+    for rel_path in &["../../Datasets/GAIM240", "../Datasets/GAIM240", "Datasets/GAIM240"] {
+        let p = PathBuf::from(rel_path);
+        if p.exists() {
+            return p;
+        }
+    }
+    for fallback in &["D:\\GAIM240", "C:\\Datasets\\GAIM240", "/home/jv495/Datasets/GAIM240", "/home/jv495/Developer/Datasets/GAIM240"] {
+        let p = PathBuf::from(fallback);
+        if p.exists() {
+            return p;
+        }
+    }
+    PathBuf::from("GAIM240")
 }
 
 fn decode_video_cmd(path: &Path) -> Arc<VideoStreamData> {
@@ -62,9 +75,10 @@ fn decode_video_cmd(path: &Path) -> Arc<VideoStreamData> {
 
     #[cfg(target_os = "windows")]
     {
-        let dll_dir = "rust_player/lib/windows/bin";
+        let dll_dir1 = "rust_player/lib/windows/bin";
+        let dll_dir2 = "lib/windows/bin";
         let current_path = std::env::var("PATH").unwrap_or_default();
-        cmd.env("PATH", format!("{};{}", dll_dir, current_path));
+        cmd.env("PATH", format!("{};{};{}", dll_dir1, dll_dir2, current_path));
     }
 
     let output = cmd

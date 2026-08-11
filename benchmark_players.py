@@ -10,7 +10,8 @@ from pathlib import Path
 from platform_utils import get_dataset_dir, set_native_lib_env, set_native_bin_env
 
 # Paths to the video players
-RUST_BIN = Path("rust_player/target/release/asap_trial").resolve()
+exe_suffix = ".exe" if sys.platform == "win32" else ""
+RUST_BIN = Path(f"rust_player/target/release/asap_trial{exe_suffix}").resolve()
 NVIS_BIN = Path("../userstudy_v0.2_linux/userstudy_v0.2/userstudy_patched").resolve()
 
 DATASET_DIR = get_dataset_dir()
@@ -62,12 +63,18 @@ def get_tree_memory_kb(parent_pid):
     return total_rss, total_vmsize
 
 def kill_process_tree(parent_pid):
-    pids = get_descendants(parent_pid) + [parent_pid]
-    for pid in pids:
+    if sys.platform == "win32":
         try:
-            subprocess.run(["kill", "-9", str(pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(parent_pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
             pass
+    else:
+        pids = get_descendants(parent_pid) + [parent_pid]
+        for pid in pids:
+            try:
+                subprocess.run(["kill", "-9", str(pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
 
 def enqueue_output(out, q):
     try:
@@ -168,8 +175,10 @@ def benchmark_scene(scene):
     nvis_vms = 0
     
     if NVIS_BIN.exists():
-        nvis_cmd = [
-            "stdbuf", "-oL", "-eL",
+        nvis_cmd = []
+        if sys.platform != "win32":
+            nvis_cmd += ["stdbuf", "-oL", "-eL"]
+        nvis_cmd += [
             str(NVIS_BIN),
             "-f", left_video,
             "-f", ref_video,

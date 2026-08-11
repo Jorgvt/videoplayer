@@ -79,8 +79,10 @@ def run_trial(trial_idx, total_trials, trial, vsync_mode, playback_fps):
     env["__GL_SHOW_GRAPHICS_OSD"] = "1"
 
     # Nvidia player command
-    cmd = [
-        "stdbuf", "-oL", "-eL",
+    cmd = []
+    if sys.platform != "win32":
+        cmd += ["stdbuf", "-oL", "-eL"]
+    cmd += [
         str(NVIS_BIN),
         "-f", left_path,
         "-f", ref_path,

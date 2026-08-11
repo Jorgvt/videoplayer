@@ -54,6 +54,7 @@ def get_dataset_dir() -> Path:
         fallbacks = [
             Path(r"C:\Datasets\GAIM240"),
             Path(r"D:\Datasets\GAIM240"),
+            Path(r"D:\GAIM240"),
         ]
     else:
         fallbacks = [
