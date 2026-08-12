@@ -589,6 +589,79 @@ fn main() {
     let mut load_times: Vec<f64> = Vec::new();
     let mut bench_csv_results: Vec<ExperimentResult> = Vec::new();
 
+    // Create window once before the loop
+    let (mon_w, mon_h) = glfw.with_connected_monitors(|_, monitors| {
+        if let Some(mon) = monitors.first() {
+            if let Some(mode) = mon.get_video_mode() {
+                return (mode.width, mode.height);
+            }
+        }
+        (1280, 720)
+    });
+
+    let (mut window, events) = glfw.with_connected_monitors(|glfw_ref, monitors| {
+        if let Some(mon) = monitors.first() {
+            glfw_ref
+                .create_window(mon_w, mon_h, "Rust On-the-Fly GPU Decoded", glfw::WindowMode::FullScreen(mon))
+                .unwrap()
+        } else {
+            glfw_ref
+                .create_window(1280, 720, "Rust On-the-Fly GPU Decoded", glfw::WindowMode::Windowed)
+                .unwrap()
+        }
+    });
+
+    window.make_current();
+    window.set_key_polling(true);
+    if no_vsync {
+        glfw.set_swap_interval(glfw::SwapInterval::None);
+    } else {
+        glfw.set_swap_interval(glfw::SwapInterval::Sync(1));
+    }
+
+    gl::load_with(|s| window.get_proc_address(s) as *const _);
+
+    let shader = YuvQuadShader::new();
+    let (tex_left_y, tex_left_u, tex_left_v) = create_empty_yuv_textures();
+    let (tex_ref_y, tex_ref_u, tex_ref_v) = create_empty_yuv_textures();
+    let (tex_right_y, tex_right_u, tex_right_v) = create_empty_yuv_textures();
+
+    // GPU and Shader Warmup Phase to compile pipelines and ramp up clock speeds
+    {
+        use std::io::Write;
+        print!("Warming up GPU and compiling shaders... ");
+        std::io::stdout().flush().ok();
+        let dummy_data = vec![0u8; FRAME_SIZE];
+        let y_ptr = &dummy_data[0];
+        let u_ptr = &dummy_data[Y_SIZE];
+        let v_ptr = &dummy_data[Y_SIZE * 2];
+        unsafe {
+            gl::ActiveTexture(gl::TEXTURE0);
+            gl::BindTexture(gl::TEXTURE_2D, tex_left_y);
+            gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32, gl::RED, gl::UNSIGNED_BYTE, y_ptr as *const _ as *const _);
+            gl::ActiveTexture(gl::TEXTURE1);
+            gl::BindTexture(gl::TEXTURE_2D, tex_left_u);
+            gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32, gl::RED, gl::UNSIGNED_BYTE, u_ptr as *const _ as *const _);
+            gl::ActiveTexture(gl::TEXTURE2);
+            gl::BindTexture(gl::TEXTURE_2D, tex_left_v);
+            gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32, gl::RED, gl::UNSIGNED_BYTE, v_ptr as *const _ as *const _);
+        }
+        for _ in 0..60 {
+            unsafe {
+                gl::Viewport(0, 0, mon_w as i32, mon_h as i32);
+                gl::ClearColor(0.02, 0.02, 0.03, 1.0);
+                gl::Clear(gl::COLOR_BUFFER_BIT);
+                shader.draw_quad(-0.5, 0.0, 0.5, 1.0, tex_left_y, tex_left_u, tex_left_v);
+                shader.draw_quad(-1.0, -1.0, 0.0, 0.0, tex_left_y, tex_left_u, tex_left_v);
+                shader.draw_quad(0.0, -1.0, 1.0, 0.0, tex_left_y, tex_left_u, tex_left_v);
+            }
+            window.swap_buffers();
+            glfw.poll_events();
+            std::thread::sleep(std::time::Duration::from_millis(4));
+        }
+        println!("Done.");
+    }
+
     for (idx, trial) in active_trials.iter().enumerate() {
         use std::io::Write;
         print!(
@@ -600,43 +673,9 @@ fn main() {
         );
         std::io::stdout().flush().unwrap();
 
-        let (mon_w, mon_h) = glfw.with_connected_monitors(|_, monitors| {
-            if let Some(mon) = monitors.first() {
-                if let Some(mode) = mon.get_video_mode() {
-                    return (mode.width, mode.height);
-                }
-            }
-            (1280, 720)
-        });
-
+        // Update window title dynamically
         let title = format!("Rust On-the-Fly GPU Decoded | Pass {}/{}", idx + 1, active_trials.len());
-
-        let (mut window, events) = glfw.with_connected_monitors(|glfw_ref, monitors| {
-            if let Some(mon) = monitors.first() {
-                glfw_ref
-                    .create_window(mon_w, mon_h, &title, glfw::WindowMode::FullScreen(mon))
-                    .unwrap()
-            } else {
-                glfw_ref
-                    .create_window(1280, 720, &title, glfw::WindowMode::Windowed)
-                    .unwrap()
-            }
-        });
-
-        window.make_current();
-        window.set_key_polling(true);
-        if no_vsync {
-            glfw.set_swap_interval(glfw::SwapInterval::None);
-        } else {
-            glfw.set_swap_interval(glfw::SwapInterval::Sync(1));
-        }
-
-        gl::load_with(|s| window.get_proc_address(s) as *const _);
-
-        // Pre-allocate only exactly 1 active texture ID per stream (total 3 sets of YUV = 9 textures!)
-        let (tex_left_y, tex_left_u, tex_left_v) = create_empty_yuv_textures();
-        let (tex_ref_y, tex_ref_u, tex_ref_v) = create_empty_yuv_textures();
-        let (tex_right_y, tex_right_u, tex_right_v) = create_empty_yuv_textures();
+        window.set_title(&title);
 
         // 0.0s startup latency! We spawn FFmpeg streams right before the presentation loop starts.
         let t_load_start = Instant::now();
@@ -692,8 +731,6 @@ fn main() {
 
         let t_total_load = t_load_start.elapsed().as_secs_f64();
         load_times.push(t_total_load);
-
-        let shader = YuvQuadShader::new();
 
         let mut step = 0usize;
         let t_start_presentation = Instant::now();
@@ -757,19 +794,7 @@ fn main() {
         let _ = child_ref.kill();
         let _ = child_right.kill();
 
-        unsafe {
-            gl::DeleteTextures(1, &tex_left_y);
-            gl::DeleteTextures(1, &tex_left_u);
-            gl::DeleteTextures(1, &tex_left_v);
-            gl::DeleteTextures(1, &tex_ref_y);
-            gl::DeleteTextures(1, &tex_ref_u);
-            gl::DeleteTextures(1, &tex_ref_v);
-            gl::DeleteTextures(1, &tex_right_y);
-            gl::DeleteTextures(1, &tex_right_u);
-            gl::DeleteTextures(1, &tex_right_v);
-        }
-
-        drop(window);
+        // Textures and window persist across trials
 
         let res = ExperimentResult {
             subject_id: "BENCHMARK_RUST_ONTHEFLY".to_string(),
@@ -800,6 +825,20 @@ fn main() {
 
         println!(" Startup Time: {:.4}s | Playback FPS: {:.2}", t_total_load, actual_fps);
     }
+
+    // Explicitly delete persistent textures and window context at exit
+    unsafe {
+        gl::DeleteTextures(1, &tex_left_y);
+        gl::DeleteTextures(1, &tex_left_u);
+        gl::DeleteTextures(1, &tex_left_v);
+        gl::DeleteTextures(1, &tex_ref_y);
+        gl::DeleteTextures(1, &tex_ref_u);
+        gl::DeleteTextures(1, &tex_ref_v);
+        gl::DeleteTextures(1, &tex_right_y);
+        gl::DeleteTextures(1, &tex_right_u);
+        gl::DeleteTextures(1, &tex_right_v);
+    }
+    drop(window);
 
     fs::create_dir_all("experiment_results").unwrap();
     let csv_out_path = "experiment_results/benchmark_rust_onthefly.csv";
