@@ -17,6 +17,7 @@ const WIDTH: usize = 1280;
 const HEIGHT: usize = 720;
 const Y_SIZE: usize = WIDTH * HEIGHT;
 const FRAME_SIZE: usize = Y_SIZE * 3; // YUV444p: Y, U, and V are all full size (1280x720) = 2,764,800 bytes
+const PRELOAD_LIMIT: usize = 450; // Shock absorber buffer size to maintain 240Hz under hardware limits
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MasterTrial {
@@ -144,6 +145,10 @@ fn spawn_ffmpeg_cmd(path: &str) -> Child {
 
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x00004000;
+        cmd.creation_flags(BELOW_NORMAL_PRIORITY_CLASS);
+
         let dll_dir1 = "rust_player/lib/windows/bin";
         let dll_dir2 = "lib/windows/bin";
         let current_path = std::env::var("PATH").unwrap_or_default();
@@ -640,18 +645,24 @@ fn main() {
         let mut child_ref = spawn_ffmpeg_cmd(&trial.ref_vid.path);
         let mut child_right = spawn_ffmpeg_cmd(&trial.right_vid.path);
 
-        // Zero-allocation buffer recycling pool:
-        // ready_rx   -> main thread receives filled buffers
-        // recycle_tx -> main thread returns used buffers to worker for reuse
+        // Zero-allocation buffer recycling pool with shock absorber buffering:
+        // We buffer up to PRELOAD_LIMIT frames in memory before rendering.
+        // Once the buffer is full, the worker blocks naturally on the sync channel,
+        // then resumes decoding in the background as the main thread drains it.
+        let decoded_left = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let decoded_ref = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let decoded_right = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
         macro_rules! make_stream {
-            ($child:expr) => {{
-                let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(3);
-                let (recycle_tx, recycle_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(3);
-                // Seed the recycle channel with 3 pre-allocated buffers (more slack = decoder stays ahead)
-                recycle_tx.send(vec![0u8; FRAME_SIZE]).ok();
-                recycle_tx.send(vec![0u8; FRAME_SIZE]).ok();
-                recycle_tx.send(vec![0u8; FRAME_SIZE]).ok();
+            ($child:expr, $counter:expr) => {{
+                let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PRELOAD_LIMIT + 3);
+                let (recycle_tx, recycle_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PRELOAD_LIMIT + 3);
+                // Seed the recycle channel with PRELOAD_LIMIT + 3 pre-allocated buffers
+                for _ in 0..(PRELOAD_LIMIT + 3) {
+                    recycle_tx.send(vec![0u8; FRAME_SIZE]).ok();
+                }
                 let mut out = $child.stdout.take().unwrap();
+                let counter_clone = std::sync::Arc::clone(&$counter);
                 std::thread::spawn(move || {
                     while let Ok(mut buf) = recycle_rx.recv() {
                         if out.read_exact(&mut buf).is_err() {
@@ -660,15 +671,24 @@ fn main() {
                         if ready_tx.send(buf).is_err() {
                             break;
                         }
+                        counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     }
                 });
                 (ready_rx, recycle_tx)
             }};
         }
 
-        let (rx_left, recycle_left) = make_stream!(child_left);
-        let (rx_ref, recycle_ref) = make_stream!(child_ref);
-        let (rx_right, recycle_right) = make_stream!(child_right);
+        let (rx_left, recycle_left) = make_stream!(child_left, decoded_left);
+        let (rx_ref, recycle_ref) = make_stream!(child_ref, decoded_ref);
+        let (rx_right, recycle_right) = make_stream!(child_right, decoded_right);
+
+        // Wait until all 3 streams have preloaded PRELOAD_LIMIT frames in RAM
+        while decoded_left.load(std::sync::atomic::Ordering::SeqCst) < PRELOAD_LIMIT
+            || decoded_ref.load(std::sync::atomic::Ordering::SeqCst) < PRELOAD_LIMIT
+            || decoded_right.load(std::sync::atomic::Ordering::SeqCst) < PRELOAD_LIMIT
+        {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
 
         let t_total_load = t_load_start.elapsed().as_secs_f64();
         load_times.push(t_total_load);
