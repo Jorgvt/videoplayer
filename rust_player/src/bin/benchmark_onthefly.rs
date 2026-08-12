@@ -116,6 +116,105 @@ struct ExperimentResult {
     pre_decode_time_sec: f64,
 }
 
+fn decode_video_cmd(path: String) -> Vec<u8> {
+    use std::process::Command;
+    #[cfg(target_os = "windows")]
+    let ffmpeg_bin = if std::path::Path::new("rust_player/lib/windows/bin/ffmpeg.exe").exists() {
+        "rust_player/lib/windows/bin/ffmpeg.exe"
+    } else if std::path::Path::new("lib/windows/bin/ffmpeg.exe").exists() {
+        "lib/windows/bin/ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let ffmpeg_bin = if Path::new("rust_player/lib/usr/bin/ffmpeg").exists() {
+        "rust_player/lib/usr/bin/ffmpeg"
+    } else if Path::new("lib/usr/bin/ffmpeg").exists() {
+        "lib/usr/bin/ffmpeg"
+    } else {
+        "ffmpeg"
+    };
+
+    let mut cmd = Command::new(ffmpeg_bin);
+
+    #[cfg(target_os = "linux")]
+    cmd.env(
+        "LD_LIBRARY_PATH",
+        "rust_player/lib/usr/lib/x86_64-linux-gnu:lib/usr/lib/x86_64-linux-gnu",
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        let dll_dir1 = "rust_player/lib/windows/bin";
+        let dll_dir2 = "lib/windows/bin";
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        cmd.env("PATH", format!("{};{};{}", dll_dir1, dll_dir2, current_path));
+    }
+
+    let mut raw_data = Vec::with_capacity(1200 * FRAME_SIZE);
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::net::TcpListener;
+        use std::process::Stdio;
+        use std::os::windows::process::CommandExt;
+
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x00004000;
+        cmd.creation_flags(BELOW_NORMAL_PRIORITY_CLASS);
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind TCP listener");
+        let port = listener.local_addr().unwrap().port();
+
+        cmd.args([
+            "-hwaccel",
+            "cuda",
+            "-c:v",
+            "hevc_cuvid",
+            "-i",
+            &path,
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv444p",
+            &format!("tcp://127.0.0.1:{}", port),
+        ]);
+
+        if let Ok(mut child) = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+            if let Ok((mut stream, _)) = listener.accept() {
+                std::io::copy(&mut stream, &mut raw_data).ok();
+            }
+            child.wait().ok();
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        cmd.args([
+            "-hwaccel",
+            "cuda",
+            "-c:v",
+            "hevc_cuvid",
+            "-i",
+            &path,
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv444p",
+            "pipe:1",
+        ]);
+
+        if let Ok(mut child) = cmd.stdout(std::process::Stdio::piped()).spawn() {
+            if let Some(mut stdout) = child.stdout.take() {
+                std::io::copy(&mut stdout, &mut raw_data).ok();
+            }
+            child.wait().ok();
+        }
+    }
+
+    raw_data
+}
+
 fn spawn_ffmpeg_cmd(path: &str) -> Child {
     #[cfg(target_os = "windows")]
     let ffmpeg_bin = if std::path::Path::new("rust_player/lib/windows/bin/ffmpeg.exe").exists() {
@@ -662,6 +761,24 @@ fn main() {
         println!("Done.");
     }
 
+    // Synchronously pre-decode Trial 1 in parallel threads to eliminate any background activity during Pass 1
+    println!("Pre-decoding Trial 1 (fully) at startup... ");
+    let t_pre_start = Instant::now();
+    let first_trial = active_trials[0].clone();
+    let p_left = first_trial.left_vid.path.clone();
+    let p_ref = first_trial.ref_vid.path.clone();
+    let p_right = first_trial.right_vid.path.clone();
+
+    let h_left = std::thread::spawn(move || decode_video_cmd(p_left));
+    let h_ref = std::thread::spawn(move || decode_video_cmd(p_ref));
+    let h_right = std::thread::spawn(move || decode_video_cmd(p_right));
+
+    let preloaded_left = h_left.join().unwrap();
+    let preloaded_ref = h_ref.join().unwrap();
+    let preloaded_right = h_right.join().unwrap();
+    let t_pre_done = t_pre_start.elapsed().as_secs_f64();
+    println!("Done ({:.2}s)", t_pre_done);
+
     for (idx, trial) in active_trials.iter().enumerate() {
         use std::io::Write;
         print!(
@@ -677,59 +794,78 @@ fn main() {
         let title = format!("Rust On-the-Fly GPU Decoded | Pass {}/{}", idx + 1, active_trials.len());
         window.set_title(&title);
 
-        // 0.0s startup latency! We spawn FFmpeg streams right before the presentation loop starts.
         let t_load_start = Instant::now();
 
-        let mut child_left = spawn_ffmpeg_cmd(&trial.left_vid.path);
-        let mut child_ref = spawn_ffmpeg_cmd(&trial.ref_vid.path);
-        let mut child_right = spawn_ffmpeg_cmd(&trial.right_vid.path);
+        let mut child_left: Option<Child> = None;
+        let mut child_ref: Option<Child> = None;
+        let mut child_right: Option<Child> = None;
 
-        // Zero-allocation buffer recycling pool with shock absorber buffering:
-        // We buffer up to PRELOAD_LIMIT frames in memory before rendering.
-        // Once the buffer is full, the worker blocks naturally on the sync channel,
-        // then resumes decoding in the background as the main thread drains it.
-        let decoded_left = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let decoded_ref = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let decoded_right = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut rx_left = None;
+        let mut rx_ref = None;
+        let mut rx_right = None;
 
-        macro_rules! make_stream {
-            ($child:expr, $counter:expr) => {{
-                let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PRELOAD_LIMIT + 3);
-                let (recycle_tx, recycle_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PRELOAD_LIMIT + 3);
-                // Seed the recycle channel with PRELOAD_LIMIT + 3 pre-allocated buffers
-                for _ in 0..(PRELOAD_LIMIT + 3) {
-                    recycle_tx.send(vec![0u8; FRAME_SIZE]).ok();
-                }
-                let mut out = $child.stdout.take().unwrap();
-                let counter_clone = std::sync::Arc::clone(&$counter);
-                std::thread::spawn(move || {
-                    while let Ok(mut buf) = recycle_rx.recv() {
-                        if out.read_exact(&mut buf).is_err() {
-                            break;
-                        }
-                        if ready_tx.send(buf).is_err() {
-                            break;
-                        }
-                        counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut recycle_left = None;
+        let mut recycle_ref = None;
+        let mut recycle_right = None;
+
+        if idx > 0 {
+            child_left = Some(spawn_ffmpeg_cmd(&trial.left_vid.path));
+            child_ref = Some(spawn_ffmpeg_cmd(&trial.ref_vid.path));
+            child_right = Some(spawn_ffmpeg_cmd(&trial.right_vid.path));
+
+            let decoded_left = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let decoded_ref = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let decoded_right = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+            macro_rules! make_stream {
+                ($child:expr, $counter:expr) => {{
+                    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PRELOAD_LIMIT + 3);
+                    let (recycle_tx, recycle_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PRELOAD_LIMIT + 3);
+                    for _ in 0..(PRELOAD_LIMIT + 3) {
+                        recycle_tx.send(vec![0u8; FRAME_SIZE]).ok();
                     }
-                });
-                (ready_rx, recycle_tx)
-            }};
+                    let mut out = $child.as_mut().unwrap().stdout.take().unwrap();
+                    let counter_clone = std::sync::Arc::clone(&$counter);
+                    std::thread::spawn(move || {
+                        while let Ok(mut buf) = recycle_rx.recv() {
+                            if out.read_exact(&mut buf).is_err() {
+                                break;
+                            }
+                            if ready_tx.send(buf).is_err() {
+                                break;
+                            }
+                            counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    });
+                    (ready_rx, recycle_tx)
+                }};
+            }
+
+            let (rl, recl) = make_stream!(child_left, decoded_left);
+            let (rr, recr) = make_stream!(child_ref, decoded_ref);
+            let (rrr, recrr) = make_stream!(child_right, decoded_right);
+
+            rx_left = Some(rl);
+            rx_ref = Some(rr);
+            rx_right = Some(rrr);
+
+            recycle_left = Some(recl);
+            recycle_ref = Some(recr);
+            recycle_right = Some(recrr);
+
+            while decoded_left.load(std::sync::atomic::Ordering::SeqCst) < PRELOAD_LIMIT
+                || decoded_ref.load(std::sync::atomic::Ordering::SeqCst) < PRELOAD_LIMIT
+                || decoded_right.load(std::sync::atomic::Ordering::SeqCst) < PRELOAD_LIMIT
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
         }
 
-        let (rx_left, recycle_left) = make_stream!(child_left, decoded_left);
-        let (rx_ref, recycle_ref) = make_stream!(child_ref, decoded_ref);
-        let (rx_right, recycle_right) = make_stream!(child_right, decoded_right);
-
-        // Wait until all 3 streams have preloaded PRELOAD_LIMIT frames in RAM
-        while decoded_left.load(std::sync::atomic::Ordering::SeqCst) < PRELOAD_LIMIT
-            || decoded_ref.load(std::sync::atomic::Ordering::SeqCst) < PRELOAD_LIMIT
-            || decoded_right.load(std::sync::atomic::Ordering::SeqCst) < PRELOAD_LIMIT
-        {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-
-        let t_total_load = t_load_start.elapsed().as_secs_f64();
+        let t_total_load = if idx == 0 {
+            t_pre_done
+        } else {
+            t_load_start.elapsed().as_secs_f64()
+        };
         load_times.push(t_total_load);
 
         let mut step = 0usize;
@@ -744,20 +880,48 @@ fn main() {
                 }
             }
 
-            let frame_left  = match rx_left.recv()  { Ok(f) => f, Err(_) => break };
-            let frame_ref   = match rx_ref.recv()   { Ok(f) => f, Err(_) => break };
-            let frame_right = match rx_right.recv() { Ok(f) => f, Err(_) => break };
+            let mut buf_left = None;
+            let mut buf_ref = None;
+            let mut buf_right = None;
+
+            let frame_left: &[u8] = if idx == 0 {
+                let offset = step * FRAME_SIZE;
+                if offset + FRAME_SIZE > preloaded_left.len() { break; }
+                &preloaded_left[offset .. offset + FRAME_SIZE]
+            } else {
+                buf_left = Some(match rx_left.as_ref().unwrap().recv() { Ok(f) => f, Err(_) => break });
+                buf_left.as_ref().unwrap()
+            };
+
+            let frame_ref: &[u8] = if idx == 0 {
+                let offset = step * FRAME_SIZE;
+                if offset + FRAME_SIZE > preloaded_ref.len() { break; }
+                &preloaded_ref[offset .. offset + FRAME_SIZE]
+            } else {
+                buf_ref = Some(match rx_ref.as_ref().unwrap().recv() { Ok(f) => f, Err(_) => break });
+                buf_ref.as_ref().unwrap()
+            };
+
+            let frame_right: &[u8] = if idx == 0 {
+                let offset = step * FRAME_SIZE;
+                if offset + FRAME_SIZE > preloaded_right.len() { break; }
+                &preloaded_right[offset .. offset + FRAME_SIZE]
+            } else {
+                buf_right = Some(match rx_right.as_ref().unwrap().recv() { Ok(f) => f, Err(_) => break });
+                buf_right.as_ref().unwrap()
+            };
 
             unsafe {
-                upload_yuv_frame_subimage(tex_left_y, tex_left_u, tex_left_v, &frame_left);
-                upload_yuv_frame_subimage(tex_ref_y, tex_ref_u, tex_ref_v, &frame_ref);
-                upload_yuv_frame_subimage(tex_right_y, tex_right_u, tex_right_v, &frame_right);
+                upload_yuv_frame_subimage(tex_left_y, tex_left_u, tex_left_v, frame_left);
+                upload_yuv_frame_subimage(tex_ref_y, tex_ref_u, tex_ref_v, frame_ref);
+                upload_yuv_frame_subimage(tex_right_y, tex_right_u, tex_right_v, frame_right);
             }
 
-            // Return buffers to workers immediately after upload
-            recycle_left.send(frame_left).ok();
-            recycle_ref.send(frame_ref).ok();
-            recycle_right.send(frame_right).ok();
+            if idx > 0 {
+                recycle_left.as_ref().unwrap().send(buf_left.unwrap()).ok();
+                recycle_ref.as_ref().unwrap().send(buf_ref.unwrap()).ok();
+                recycle_right.as_ref().unwrap().send(buf_right.unwrap()).ok();
+            }
 
             render_pyramid_quads(
                 &mut window,
@@ -790,9 +954,11 @@ fn main() {
         fps_results.push(actual_fps);
 
         // Terminate active decoders
-        let _ = child_left.kill();
-        let _ = child_ref.kill();
-        let _ = child_right.kill();
+        if idx > 0 {
+            let _ = child_left.as_mut().unwrap().kill();
+            let _ = child_ref.as_mut().unwrap().kill();
+            let _ = child_right.as_mut().unwrap().kill();
+        }
 
         // Textures and window persist across trials
 
