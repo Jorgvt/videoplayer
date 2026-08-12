@@ -215,30 +215,24 @@ fn create_empty_yuv_textures() -> (u32, u32, u32) {
 }
 
 unsafe fn upload_yuv_frame_subimage(tex_y: u32, tex_u: u32, tex_v: u32, raw_data: &[u8]) {
-    let y_ptr = &raw_data[0];
-    let u_ptr = &raw_data[Y_SIZE];
-    let v_ptr = &raw_data[Y_SIZE * 2];
+    let y_ptr = raw_data.as_ptr();
+    let u_ptr = raw_data[Y_SIZE..].as_ptr();
+    let v_ptr = raw_data[Y_SIZE * 2..].as_ptr();
 
     gl::ActiveTexture(gl::TEXTURE0);
     gl::BindTexture(gl::TEXTURE_2D, tex_y);
-    gl::TexSubImage2D(
-        gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32,
-        gl::RED, gl::UNSIGNED_BYTE, y_ptr as *const _ as *const _
-    );
+    gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32,
+        gl::RED, gl::UNSIGNED_BYTE, y_ptr as *const _);
 
     gl::ActiveTexture(gl::TEXTURE1);
     gl::BindTexture(gl::TEXTURE_2D, tex_u);
-    gl::TexSubImage2D(
-        gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32,
-        gl::RED, gl::UNSIGNED_BYTE, u_ptr as *const _ as *const _
-    );
+    gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32,
+        gl::RED, gl::UNSIGNED_BYTE, u_ptr as *const _);
 
     gl::ActiveTexture(gl::TEXTURE2);
     gl::BindTexture(gl::TEXTURE_2D, tex_v);
-    gl::TexSubImage2D(
-        gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32,
-        gl::RED, gl::UNSIGNED_BYTE, v_ptr as *const _ as *const _
-    );
+    gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32,
+        gl::RED, gl::UNSIGNED_BYTE, v_ptr as *const _);
 }
 
 struct YuvQuadShader {
@@ -646,9 +640,35 @@ fn main() {
         let mut child_ref = spawn_ffmpeg_cmd(&trial.ref_vid.path);
         let mut child_right = spawn_ffmpeg_cmd(&trial.right_vid.path);
 
-        let mut out_left = child_left.stdout.take().unwrap();
-        let mut out_ref = child_ref.stdout.take().unwrap();
-        let mut out_right = child_right.stdout.take().unwrap();
+        // Zero-allocation buffer recycling pool:
+        // ready_rx   -> main thread receives filled buffers
+        // recycle_tx -> main thread returns used buffers to worker for reuse
+        macro_rules! make_stream {
+            ($child:expr) => {{
+                let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(3);
+                let (recycle_tx, recycle_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(3);
+                // Seed the recycle channel with 3 pre-allocated buffers (more slack = decoder stays ahead)
+                recycle_tx.send(vec![0u8; FRAME_SIZE]).ok();
+                recycle_tx.send(vec![0u8; FRAME_SIZE]).ok();
+                recycle_tx.send(vec![0u8; FRAME_SIZE]).ok();
+                let mut out = $child.stdout.take().unwrap();
+                std::thread::spawn(move || {
+                    while let Ok(mut buf) = recycle_rx.recv() {
+                        if out.read_exact(&mut buf).is_err() {
+                            break;
+                        }
+                        if ready_tx.send(buf).is_err() {
+                            break;
+                        }
+                    }
+                });
+                (ready_rx, recycle_tx)
+            }};
+        }
+
+        let (rx_left, recycle_left) = make_stream!(child_left);
+        let (rx_ref, recycle_ref) = make_stream!(child_ref);
+        let (rx_right, recycle_right) = make_stream!(child_right);
 
         let t_total_load = t_load_start.elapsed().as_secs_f64();
         load_times.push(t_total_load);
@@ -656,10 +676,9 @@ fn main() {
         let shader = YuvQuadShader::new();
 
         let mut step = 0usize;
-        let mut frame_buf = vec![0u8; FRAME_SIZE];
         let t_start_presentation = Instant::now();
 
-        // Active presentation loop decoding and uploading on-the-fly
+        // Active presentation loop — zero-allocation hot path
         while !window.should_close() && step < 1200 {
             glfw.poll_events();
             for (_, event) in glfw::flush_messages(&events) {
@@ -668,28 +687,20 @@ fn main() {
                 }
             }
 
-            // Read and upload next frame in real time
-            let mut success = true;
-            if out_left.read_exact(&mut frame_buf).is_ok() {
-                unsafe { upload_yuv_frame_subimage(tex_left_y, tex_left_u, tex_left_v, &frame_buf); }
-            } else {
-                success = false;
-            }
-            if out_ref.read_exact(&mut frame_buf).is_ok() {
-                unsafe { upload_yuv_frame_subimage(tex_ref_y, tex_ref_u, tex_ref_v, &frame_buf); }
-            } else {
-                success = false;
-            }
-            if out_right.read_exact(&mut frame_buf).is_ok() {
-                unsafe { upload_yuv_frame_subimage(tex_right_y, tex_right_u, tex_right_v, &frame_buf); }
-            } else {
-                success = false;
+            let frame_left  = match rx_left.recv()  { Ok(f) => f, Err(_) => break };
+            let frame_ref   = match rx_ref.recv()   { Ok(f) => f, Err(_) => break };
+            let frame_right = match rx_right.recv() { Ok(f) => f, Err(_) => break };
+
+            unsafe {
+                upload_yuv_frame_subimage(tex_left_y, tex_left_u, tex_left_v, &frame_left);
+                upload_yuv_frame_subimage(tex_ref_y, tex_ref_u, tex_ref_v, &frame_ref);
+                upload_yuv_frame_subimage(tex_right_y, tex_right_u, tex_right_v, &frame_right);
             }
 
-            if !success {
-                // Video ended prematurely
-                break;
-            }
+            // Return buffers to workers immediately after upload
+            recycle_left.send(frame_left).ok();
+            recycle_ref.send(frame_ref).ok();
+            recycle_right.send(frame_right).ok();
 
             render_pyramid_quads(
                 &mut window,

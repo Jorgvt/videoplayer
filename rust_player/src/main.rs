@@ -170,8 +170,45 @@ fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
         cmd.env("PATH", format!("{};{};{}", dll_dir1, dll_dir2, current_path));
     }
 
-    let output = cmd
-        .args([
+    let mut raw_data = Vec::with_capacity(1200 * FRAME_SIZE);
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::net::TcpListener;
+        use std::process::Stdio;
+        use std::os::windows::process::CommandExt;
+
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x00004000;
+        cmd.creation_flags(BELOW_NORMAL_PRIORITY_CLASS);
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind TCP listener");
+        let port = listener.local_addr().unwrap().port();
+
+        cmd.args([
+            "-hwaccel",
+            "cuda",
+            "-c:v",
+            "hevc_cuvid",
+            "-i",
+            &path,
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv420p",
+            &format!("tcp://127.0.0.1:{}", port),
+        ]);
+
+        if let Ok(mut child) = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+            if let Ok((mut stream, _)) = listener.accept() {
+                std::io::copy(&mut stream, &mut raw_data).ok();
+            }
+            child.wait().ok();
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        cmd.args([
             "-hwaccel",
             "cuda",
             "-c:v",
@@ -183,12 +220,18 @@ fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
             "-pix_fmt",
             "yuv420p",
             "pipe:1",
-        ])
-        .output();
+        ]);
 
-    let mut raw_data = Vec::new();
-    if let Ok(out) = output {
-        raw_data = out.stdout;
+        if let Ok(mut child) = cmd
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            if let Some(mut stdout) = child.stdout.take() {
+                std::io::copy(&mut stdout, &mut raw_data).ok();
+            }
+            child.wait().ok();
+        }
     }
 
     let num_frames = raw_data.len() / FRAME_SIZE;
@@ -696,6 +739,10 @@ fn main() {
 
     let mut final_results = existing_results;
 
+    // Prefetch and pre-decode the first trial in the background.
+    let first_trial = active_trials[0].clone();
+    let mut next_tf_handle = Some(thread::spawn(move || decode_trial_parallel(&first_trial)));
+
     for (idx, trial) in active_trials.iter().enumerate() {
         use std::io::Write;
         print!(
@@ -708,8 +755,14 @@ fn main() {
         std::io::stdout().flush().unwrap();
 
         let t0 = Instant::now();
-        let tf = decode_trial_parallel(trial);
+        let tf = next_tf_handle.take().unwrap().join().unwrap();
         let t_load = t0.elapsed().as_secs_f64();
+
+        // Spawn background pre-decoding for the next trial
+        if idx + 1 < active_trials.len() {
+            let next_trial = active_trials[idx + 1].clone();
+            next_tf_handle = Some(thread::spawn(move || decode_trial_parallel(&next_trial)));
+        }
 
         if tf.left_stream.num_frames == 0
             || tf.ref_stream.num_frames == 0

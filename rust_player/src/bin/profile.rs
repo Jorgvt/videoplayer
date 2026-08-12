@@ -81,25 +81,31 @@ fn decode_video_cmd(path: &Path) -> Arc<VideoStreamData> {
         cmd.env("PATH", format!("{};{};{}", dll_dir1, dll_dir2, current_path));
     }
 
-    let output = cmd
-        .args([
-            "-hwaccel",
-            "cuda",
-            "-c:v",
-            "hevc_cuvid",
-            "-i",
-            &path.to_string_lossy(),
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "yuv420p",
-            "pipe:1",
-        ])
-        .output();
+    cmd.args([
+        "-hwaccel",
+        "cuda",
+        "-c:v",
+        "hevc_cuvid",
+        "-i",
+        &path.to_string_lossy(),
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "yuv420p",
+        "pipe:1",
+    ]);
 
-    let mut raw_data = Vec::new();
-    if let Ok(out) = output {
-        raw_data = out.stdout;
+    let mut raw_data = Vec::with_capacity(1200 * FRAME_SIZE);
+
+    if let Ok(mut child) = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        if let Some(mut stdout) = child.stdout.take() {
+            std::io::copy(&mut stdout, &mut raw_data).ok();
+        }
+        child.wait().ok();
     }
 
     let num_frames = raw_data.len() / FRAME_SIZE;

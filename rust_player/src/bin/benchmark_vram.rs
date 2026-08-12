@@ -91,15 +91,7 @@ struct VramStreamData {
     textures_v: Vec<u32>,
 }
 
-impl Drop for VramStreamData {
-    fn drop(&mut self) {
-        unsafe {
-            gl::DeleteTextures(self.textures_y.len() as i32, self.textures_y.as_ptr());
-            gl::DeleteTextures(self.textures_u.len() as i32, self.textures_u.as_ptr());
-            gl::DeleteTextures(self.textures_v.len() as i32, self.textures_v.as_ptr());
-        }
-    }
-}
+
 
 struct VramTrialFrames {
     left_stream: VramStreamData,
@@ -191,8 +183,45 @@ fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
         cmd.env("PATH", format!("{};{};{}", dll_dir1, dll_dir2, current_path));
     }
 
-    let output = cmd
-        .args([
+    let mut raw_data = Vec::with_capacity(1200 * FRAME_SIZE);
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::net::TcpListener;
+        use std::process::Stdio;
+        use std::os::windows::process::CommandExt;
+
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x00004000;
+        cmd.creation_flags(BELOW_NORMAL_PRIORITY_CLASS);
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind TCP listener");
+        let port = listener.local_addr().unwrap().port();
+
+        cmd.args([
+            "-hwaccel",
+            "cuda",
+            "-c:v",
+            "hevc_cuvid",
+            "-i",
+            &path,
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv420p",
+            &format!("tcp://127.0.0.1:{}", port),
+        ]);
+
+        if let Ok(mut child) = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+            if let Ok((mut stream, _)) = listener.accept() {
+                std::io::copy(&mut stream, &mut raw_data).ok();
+            }
+            child.wait().ok();
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        cmd.args([
             "-hwaccel",
             "cuda",
             "-c:v",
@@ -204,12 +233,14 @@ fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
             "-pix_fmt",
             "yuv420p",
             "pipe:1",
-        ])
-        .output();
+        ]);
 
-    let mut raw_data = Vec::new();
-    if let Ok(out) = output {
-        raw_data = out.stdout;
+        if let Ok(mut child) = cmd.stdout(std::process::Stdio::piped()).spawn() {
+            if let Some(mut stdout) = child.stdout.take() {
+                std::io::copy(&mut stdout, &mut raw_data).ok();
+            }
+            child.wait().ok();
+        }
     }
 
     let num_frames = raw_data.len() / FRAME_SIZE;
@@ -236,18 +267,30 @@ fn decode_trial_parallel(trial: &PreparedTrial) -> TrialFrames {
     }
 }
 
-// Function to upload CPU RAM decoded buffers directly to GPU VRAM textures
-fn upload_stream_to_vram(stream: &VideoStreamData) -> VramStreamData {
-    let num_frames = stream.num_frames;
-    let mut textures_y = vec![0u32; num_frames];
-    let mut textures_u = vec![0u32; num_frames];
-    let mut textures_v = vec![0u32; num_frames];
-
+fn allocate_stream_textures(num_frames: usize, is_chroma: bool) -> Vec<u32> {
+    let mut textures = vec![0u32; num_frames];
+    let w = if is_chroma { UV_WIDTH } else { WIDTH };
+    let h = if is_chroma { UV_HEIGHT } else { HEIGHT };
     unsafe {
-        gl::GenTextures(num_frames as i32, textures_y.as_mut_ptr());
-        gl::GenTextures(num_frames as i32, textures_u.as_mut_ptr());
-        gl::GenTextures(num_frames as i32, textures_v.as_mut_ptr());
+        gl::GenTextures(num_frames as i32, textures.as_mut_ptr());
+        for i in 0..num_frames {
+            gl::BindTexture(gl::TEXTURE_2D, textures[i]);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
+            gl::TexImage2D(
+                gl::TEXTURE_2D, 0, gl::RED as i32, w as i32, h as i32, 0,
+                gl::RED, gl::UNSIGNED_BYTE, std::ptr::null()
+            );
+        }
+    }
+    textures
+}
 
+fn upload_stream_pixels(stream: &VideoStreamData, textures_y: &[u32], textures_u: &[u32], textures_v: &[u32]) {
+    let num_frames = stream.num_frames;
+    unsafe {
         for i in 0..num_frames {
             let frame_offset = i * FRAME_SIZE;
             let y_ptr = &stream.data[frame_offset];
@@ -256,44 +299,25 @@ fn upload_stream_to_vram(stream: &VideoStreamData) -> VramStreamData {
 
             // Y Texture
             gl::BindTexture(gl::TEXTURE_2D, textures_y[i]);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
-            gl::TexImage2D(
-                gl::TEXTURE_2D, 0, gl::RED as i32, WIDTH as i32, HEIGHT as i32, 0,
+            gl::TexSubImage2D(
+                gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32,
                 gl::RED, gl::UNSIGNED_BYTE, y_ptr as *const _ as *const _
             );
 
             // U Texture
             gl::BindTexture(gl::TEXTURE_2D, textures_u[i]);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
-            gl::TexImage2D(
-                gl::TEXTURE_2D, 0, gl::RED as i32, UV_WIDTH as i32, UV_HEIGHT as i32, 0,
+            gl::TexSubImage2D(
+                gl::TEXTURE_2D, 0, 0, 0, UV_WIDTH as i32, UV_HEIGHT as i32,
                 gl::RED, gl::UNSIGNED_BYTE, u_ptr as *const _ as *const _
             );
 
             // V Texture
             gl::BindTexture(gl::TEXTURE_2D, textures_v[i]);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
-            gl::TexImage2D(
-                gl::TEXTURE_2D, 0, gl::RED as i32, UV_WIDTH as i32, UV_HEIGHT as i32, 0,
+            gl::TexSubImage2D(
+                gl::TEXTURE_2D, 0, 0, 0, UV_WIDTH as i32, UV_HEIGHT as i32,
                 gl::RED, gl::UNSIGNED_BYTE, v_ptr as *const _ as *const _
             );
         }
-    }
-
-    VramStreamData {
-        num_frames,
-        textures_y,
-        textures_u,
-        textures_v,
     }
 }
 
@@ -664,6 +688,69 @@ fn main() {
     let mut load_times: Vec<f64> = Vec::new();
     let mut bench_csv_results: Vec<ExperimentResult> = Vec::new();
 
+    // Create window once before the loop
+    let (mon_w, mon_h) = glfw.with_connected_monitors(|_, monitors| {
+        if let Some(mon) = monitors.first() {
+            if let Some(mode) = mon.get_video_mode() {
+                return (mode.width, mode.height);
+            }
+        }
+        (1280, 720)
+    });
+
+    let (mut window, events) = glfw.with_connected_monitors(|glfw_ref, monitors| {
+        if let Some(mon) = monitors.first() {
+            glfw_ref
+                .create_window(mon_w, mon_h, "Rust VRAM pre-uploaded", glfw::WindowMode::FullScreen(mon))
+                .unwrap()
+        } else {
+            glfw_ref
+                .create_window(1280, 720, "Rust VRAM pre-uploaded", glfw::WindowMode::Windowed)
+                .unwrap()
+        }
+    });
+
+    window.make_current();
+    window.set_key_polling(true);
+    if no_vsync {
+        glfw.set_swap_interval(glfw::SwapInterval::None);
+    } else {
+        glfw.set_swap_interval(glfw::SwapInterval::Sync(1));
+    }
+
+    gl::load_with(|s| window.get_proc_address(s) as *const _);
+
+    // Pre-allocate the persistent texture pool (3,600 textures) once at startup!
+    // This avoids all allocation overhead and locks during trial transitions.
+    let textures_left_y = allocate_stream_textures(1200, false);
+    let textures_left_u = allocate_stream_textures(1200, true);
+    let textures_left_v = allocate_stream_textures(1200, true);
+
+    let textures_ref_y = allocate_stream_textures(1200, false);
+    let textures_ref_u = allocate_stream_textures(1200, true);
+    let textures_ref_v = allocate_stream_textures(1200, true);
+
+    let textures_right_y = allocate_stream_textures(1200, false);
+    let textures_right_u = allocate_stream_textures(1200, true);
+    let textures_right_v = allocate_stream_textures(1200, true);
+
+    // Prefetch and pre-decode Trial 1 AND Trial 2 at startup!
+    use std::io::Write;
+    let mut preloaded_frames: Vec<TrialFrames> = Vec::new();
+    print!("Pre-decoding initial trials... ");
+    std::io::stdout().flush().ok();
+    let t_pre_start = Instant::now();
+    preloaded_frames.push(decode_trial_parallel(&active_trials[0]));
+    if active_trials.len() > 1 {
+        preloaded_frames.push(decode_trial_parallel(&active_trials[1]));
+    }
+    println!("Done ({:.2}s)", t_pre_start.elapsed().as_secs_f64());
+
+    let mut next_tf_handles: Vec<Option<std::thread::JoinHandle<TrialFrames>>> = Vec::new();
+    for _ in 0..active_trials.len() {
+        next_tf_handles.push(None);
+    }
+
     for (idx, trial) in active_trials.iter().enumerate() {
         use std::io::Write;
         print!(
@@ -675,10 +762,24 @@ fn main() {
         );
         std::io::stdout().flush().unwrap();
 
-        // 1. CPU HEVC Decode phase (runs in parallel threads)
+        // Update window title dynamically
+        let title = format!("Rust VRAM pre-uploaded | Pass {}/{}", idx + 1, active_trials.len());
+        window.set_title(&title);
+
+        // 1. CPU HEVC Decode phase
         let t_decode_start = Instant::now();
-        let cpu_frames = decode_trial_parallel(trial);
+        let cpu_frames = if idx < preloaded_frames.len() {
+            preloaded_frames[idx].clone()
+        } else {
+            next_tf_handles[idx].take().unwrap().join().unwrap()
+        };
         let t_decode = t_decode_start.elapsed().as_secs_f64();
+
+        // Spawn background pre-decoding for Trial idx + 2
+        if idx + 2 < active_trials.len() {
+            let next_trial = active_trials[idx + 2].clone();
+            next_tf_handles[idx + 2] = Some(thread::spawn(move || decode_trial_parallel(&next_trial)));
+        }
 
         if cpu_frames.left_stream.num_frames == 0
             || cpu_frames.ref_stream.num_frames == 0
@@ -691,46 +792,38 @@ fn main() {
             continue;
         }
 
-        let (mon_w, mon_h) = glfw.with_connected_monitors(|_, monitors| {
-            if let Some(mon) = monitors.first() {
-                if let Some(mode) = mon.get_video_mode() {
-                    return (mode.width, mode.height);
-                }
-            }
-            (1280, 720)
-        });
-
-        let title = format!("Rust VRAM pre-uploaded | Pass {}/{}", idx + 1, active_trials.len());
-
-        let (mut window, events) = glfw.with_connected_monitors(|glfw_ref, monitors| {
-            if let Some(mon) = monitors.first() {
-                glfw_ref
-                    .create_window(mon_w, mon_h, &title, glfw::WindowMode::FullScreen(mon))
-                    .unwrap()
-            } else {
-                glfw_ref
-                    .create_window(1280, 720, &title, glfw::WindowMode::Windowed)
-                    .unwrap()
-            }
-        });
-
-        window.make_current();
-        window.set_key_polling(true);
-        if no_vsync {
-            glfw.set_swap_interval(glfw::SwapInterval::None);
-        } else {
-            glfw.set_swap_interval(glfw::SwapInterval::Sync(1));
-        }
-
-        gl::load_with(|s| window.get_proc_address(s) as *const _);
-
-        // 2. VRAM Pre-Uploading phase (transfers RAM YUV buffers to OpenGL textures in VRAM)
+        // 2. VRAM Pre-Uploading phase: copy pixels sequentially on the main thread
+        // Since textures are pre-allocated, this is a pure DMA write (no GPU allocator locking).
         let t_upload_start = Instant::now();
-        let tf = VramTrialFrames {
-            left_stream: upload_stream_to_vram(&cpu_frames.left_stream),
-            ref_stream: upload_stream_to_vram(&cpu_frames.ref_stream),
-            right_stream: upload_stream_to_vram(&cpu_frames.right_stream),
+
+        let left_num_frames = cpu_frames.left_stream.num_frames;
+        let ref_num_frames = cpu_frames.ref_stream.num_frames;
+        let right_num_frames = cpu_frames.right_stream.num_frames;
+
+        upload_stream_pixels(&cpu_frames.left_stream, &textures_left_y, &textures_left_u, &textures_left_v);
+        upload_stream_pixels(&cpu_frames.ref_stream, &textures_ref_y, &textures_ref_u, &textures_ref_v);
+        upload_stream_pixels(&cpu_frames.right_stream, &textures_right_y, &textures_right_u, &textures_right_v);
+
+        let left_stream = VramStreamData {
+            num_frames: left_num_frames,
+            textures_y: textures_left_y.clone(),
+            textures_u: textures_left_u.clone(),
+            textures_v: textures_left_v.clone(),
         };
+        let ref_stream = VramStreamData {
+            num_frames: ref_num_frames,
+            textures_y: textures_ref_y.clone(),
+            textures_u: textures_ref_u.clone(),
+            textures_v: textures_ref_v.clone(),
+        };
+        let right_stream = VramStreamData {
+            num_frames: right_num_frames,
+            textures_y: textures_right_y.clone(),
+            textures_u: textures_right_u.clone(),
+            textures_v: textures_right_v.clone(),
+        };
+
+        let tf = VramTrialFrames { left_stream, ref_stream, right_stream };
         let t_upload = t_upload_start.elapsed().as_secs_f64();
         
         let t_total_load = t_decode + t_upload;
@@ -779,10 +872,9 @@ fn main() {
         }
         fps_results.push(actual_fps);
 
-        // Explicitly drop VramTrialFrames to invoke Drop trait and free VRAM
+        // Explicitly drop VramTrialFrames to free memory
         drop(tf);
         drop(cpu_frames);
-        drop(window);
 
         let res = ExperimentResult {
             subject_id: "BENCHMARK_RUST_VRAM".to_string(),
@@ -816,6 +908,20 @@ fn main() {
             t_total_load, t_upload, actual_fps
         );
     }
+
+    // Explicitly delete the persistent textures at exit
+    unsafe {
+        gl::DeleteTextures(1200, textures_left_y.as_ptr());
+        gl::DeleteTextures(1200, textures_left_u.as_ptr());
+        gl::DeleteTextures(1200, textures_left_v.as_ptr());
+        gl::DeleteTextures(1200, textures_ref_y.as_ptr());
+        gl::DeleteTextures(1200, textures_ref_u.as_ptr());
+        gl::DeleteTextures(1200, textures_ref_v.as_ptr());
+        gl::DeleteTextures(1200, textures_right_y.as_ptr());
+        gl::DeleteTextures(1200, textures_right_u.as_ptr());
+        gl::DeleteTextures(1200, textures_right_v.as_ptr());
+    }
+    drop(window);
 
     fs::create_dir_all("experiment_results").unwrap();
     let csv_out_path = "experiment_results/benchmark_rust_vram.csv";
