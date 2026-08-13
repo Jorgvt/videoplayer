@@ -1150,6 +1150,7 @@ fn main() {
         let response_time = start_time.elapsed().as_secs_f64();
 
         let mut actual_fps = 239.76;
+        let mut dropped_frames = 0;
         if swap_timestamps.len() > 1 {
             let total_dur = swap_timestamps
                 .last()
@@ -1158,6 +1159,12 @@ fn main() {
                 .as_secs_f64();
             if total_dur > 0.0 {
                 actual_fps = (swap_timestamps.len() - 1) as f64 / total_dur;
+            }
+            for i in 1..swap_timestamps.len() {
+                let diff = swap_timestamps[i].duration_since(swap_timestamps[i - 1]).as_secs_f64() * 1000.0;
+                if diff > 6.25 {
+                    dropped_frames += 1;
+                }
             }
         }
 
@@ -1206,8 +1213,8 @@ fn main() {
         };
 
         println!(
-            " Chose {} ({}) in {:.2}s (FPS: {:.2})",
-            res.chosen_side, res.chosen_level, res.response_time_sec, res.presentation_fps
+            " Chose {} ({}) in {:.2}s (FPS: {:.2} | Drops: {})",
+            res.chosen_side, res.chosen_level, res.response_time_sec, res.presentation_fps, dropped_frames
         );
 
         final_results.push(res);
