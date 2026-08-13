@@ -17,7 +17,7 @@ const WIDTH: usize = 1280;
 const HEIGHT: usize = 720;
 const Y_SIZE: usize = WIDTH * HEIGHT;
 const FRAME_SIZE: usize = Y_SIZE * 3; // YUV444p: Y, U, and V are all full size (1280x720) = 2,764,800 bytes
-const PRELOAD_LIMIT: usize = 550; // Shock absorber buffer size to maintain 240Hz under hardware limits
+const PRELOAD_LIMIT: usize = 800; // Shock absorber buffer size to maintain 240Hz under hardware limits
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MasterTrial {

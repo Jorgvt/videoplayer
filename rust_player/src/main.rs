@@ -22,7 +22,7 @@ const UV_WIDTH: usize = WIDTH;
 const UV_HEIGHT: usize = HEIGHT;
 const UV_SIZE: usize = Y_SIZE;
 const FRAME_SIZE: usize = Y_SIZE + UV_SIZE + UV_SIZE; // YUV444P frame size = 2,764,800 bytes
-const PRELOAD_LIMIT: usize = 550; // Shock absorber buffer size to maintain 240Hz under hardware limits
+const PRELOAD_LIMIT: usize = 1200; // Shock absorber buffer size to maintain 240Hz under hardware limits
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MasterTrial {
@@ -840,7 +840,7 @@ fn main() {
     };
 
     println!("\n=================================================================");
-    println!("  GAIM240 HUMAN VISUAL PERCEPTION EXPERIMENT SUITE (Rust YUV420P)");
+    println!("  GAIM240 HUMAN VISUAL PERCEPTION EXPERIMENT SUITE (Rust YUV444p)");
     println!("=================================================================");
     println!("Participant ID  : {}", subject_id);
     println!("Total Active    : {}", active_trials.len());
@@ -856,7 +856,7 @@ fn main() {
             "HARDWARE VSYNC (Sync 1 240Hz Locked)"
         }
     );
-    println!("Architecture    : YUV420P Planar + GPU Shader Color Conversion");
+    println!("Architecture    : YUV444p Planar (On-the-Fly GPU hardware Decoding)");
     println!("=================================================================\n");
 
     if active_trials.is_empty() {
@@ -1063,7 +1063,11 @@ fn main() {
             continue;
         }
 
-        println!(" Pre-Decoded ({:.2}s) -> Presenting Locked 239.76 FPS Pyramid", t_load);
+        if idx == 0 {
+            println!(" Pre-Decoded ({:.2}s)", t_load);
+        } else {
+            println!(" On-the-Fly GPU Decoded ({:.2}s)", t_load);
+        }
 
         let start_time = Instant::now();
         let mut swap_timestamps: Vec<Instant> = Vec::new();
