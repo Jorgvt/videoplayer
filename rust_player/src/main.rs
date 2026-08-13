@@ -7,6 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
+use std::io::Read;
 
 use glfw::{Action, Context, Key, WindowHint};
 use rand::rngs::StdRng;
@@ -17,10 +18,11 @@ use serde::{Deserialize, Serialize};
 const WIDTH: usize = 1280;
 const HEIGHT: usize = 720;
 const Y_SIZE: usize = WIDTH * HEIGHT;
-const UV_WIDTH: usize = WIDTH / 2;
-const UV_HEIGHT: usize = HEIGHT / 2;
-const UV_SIZE: usize = UV_WIDTH * UV_HEIGHT;
-const FRAME_SIZE: usize = Y_SIZE + UV_SIZE + UV_SIZE; // YUV420P frame size = 1,382,400 bytes
+const UV_WIDTH: usize = WIDTH;
+const UV_HEIGHT: usize = HEIGHT;
+const UV_SIZE: usize = Y_SIZE;
+const FRAME_SIZE: usize = Y_SIZE + UV_SIZE + UV_SIZE; // YUV444P frame size = 2,764,800 bytes
+const PRELOAD_LIMIT: usize = 550; // Shock absorber buffer size to maintain 240Hz under hardware limits
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MasterTrial {
@@ -130,6 +132,66 @@ struct ExperimentResult {
     presentation_fps: f64,
 }
 
+fn spawn_ffmpeg_cmd(path: &str) -> std::process::Child {
+    #[cfg(target_os = "windows")]
+    let ffmpeg_bin = if std::path::Path::new("rust_player/lib/windows/bin/ffmpeg.exe").exists() {
+        "rust_player/lib/windows/bin/ffmpeg.exe"
+    } else if std::path::Path::new("lib/windows/bin/ffmpeg.exe").exists() {
+        "lib/windows/bin/ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let ffmpeg_bin = if Path::new("rust_player/lib/usr/bin/ffmpeg").exists() {
+        "rust_player/lib/usr/bin/ffmpeg"
+    } else if Path::new("lib/usr/bin/ffmpeg").exists() {
+        "lib/usr/bin/ffmpeg"
+    } else {
+        "ffmpeg"
+    };
+
+    let mut cmd = std::process::Command::new(ffmpeg_bin);
+
+    #[cfg(target_os = "linux")]
+    cmd.env(
+        "LD_LIBRARY_PATH",
+        "rust_player/lib/usr/lib/x86_64-linux-gnu:lib/usr/lib/x86_64-linux-gnu",
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x00004000;
+        cmd.creation_flags(BELOW_NORMAL_PRIORITY_CLASS);
+
+        let dll_dir1 = "rust_player/lib/windows/bin";
+        let dll_dir2 = "lib/windows/bin";
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        cmd.env("PATH", format!("{};{};{}", dll_dir1, dll_dir2, current_path));
+    }
+
+    cmd.args([
+            "-hwaccel",
+            "cuda",
+            "-c:v",
+            "hevc_cuvid",
+            "-stream_loop",
+            "-1",
+            "-i",
+            path,
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv444p",
+            "pipe:1",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("Failed to spawn ffmpeg")
+}
+
 fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
     use std::process::Command;
 
@@ -194,7 +256,7 @@ fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
             "-f",
             "rawvideo",
             "-pix_fmt",
-            "yuv420p",
+            "yuv444p",
             &format!("tcp://127.0.0.1:{}", port),
         ]);
 
@@ -218,7 +280,7 @@ fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
             "-f",
             "rawvideo",
             "-pix_fmt",
-            "yuv420p",
+            "yuv444p",
             "pipe:1",
         ]);
 
@@ -492,6 +554,77 @@ fn upload_yuv_frame(tex: &YuvTextures, raw_data: &[u8], frame_idx: usize) {
     }
 }
 
+fn upload_yuv_single_frame(tex: &YuvTextures, frame: &[u8]) {
+    if frame.len() < FRAME_SIZE {
+        return;
+    }
+    let y_ptr = &frame[0];
+    let u_ptr = &frame[Y_SIZE];
+    let v_ptr = &frame[Y_SIZE + UV_SIZE];
+
+    unsafe {
+        gl::ActiveTexture(gl::TEXTURE0);
+        gl::BindTexture(gl::TEXTURE_2D, tex.y);
+        gl::TexSubImage2D(
+            gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32,
+            gl::RED, gl::UNSIGNED_BYTE, y_ptr as *const _ as *const _,
+        );
+
+        gl::ActiveTexture(gl::TEXTURE1);
+        gl::BindTexture(gl::TEXTURE_2D, tex.u);
+        gl::TexSubImage2D(
+            gl::TEXTURE_2D, 0, 0, 0, UV_WIDTH as i32, UV_HEIGHT as i32,
+            gl::RED, gl::UNSIGNED_BYTE, u_ptr as *const _ as *const _,
+        );
+
+        gl::ActiveTexture(gl::TEXTURE2);
+        gl::BindTexture(gl::TEXTURE_2D, tex.v);
+        gl::TexSubImage2D(
+            gl::TEXTURE_2D, 0, 0, 0, UV_WIDTH as i32, UV_HEIGHT as i32,
+            gl::RED, gl::UNSIGNED_BYTE, v_ptr as *const _ as *const _,
+        );
+    }
+}
+
+fn render_pyramid_on_the_fly(
+    window: &mut glfw::Window,
+    shader: &YuvQuadShader,
+    tex_a: &YuvTextures,
+    tex_ref: &YuvTextures,
+    tex_c: &YuvTextures,
+    frame_left: &[u8],
+    frame_ref: &[u8],
+    frame_right: &[u8],
+) {
+    let (w, h) = window.get_framebuffer_size();
+    let target_aspect = 16.0 / 9.0;
+
+    let mut w_view = w;
+    let mut h_view = (w as f32 / target_aspect) as i32;
+    if h_view > h {
+        h_view = h;
+        w_view = (h as f32 * target_aspect) as i32;
+    }
+    let x_offset = (w - w_view) / 2;
+    let y_offset = (h - h_view) / 2;
+
+    upload_yuv_single_frame(tex_a, frame_left);
+    upload_yuv_single_frame(tex_ref, frame_ref);
+    upload_yuv_single_frame(tex_c, frame_right);
+
+    unsafe {
+        gl::Viewport(0, 0, w, h);
+        gl::ClearColor(0.02, 0.02, 0.03, 1.0);
+        gl::Clear(gl::COLOR_BUFFER_BIT);
+
+        gl::Viewport(x_offset, y_offset, w_view, h_view);
+
+        shader.draw_quad(-0.5, 0.0, 0.5, 1.0, tex_ref.y, tex_ref.u, tex_ref.v);
+        shader.draw_quad(-1.0, -1.0, 0.0, 0.0, tex_a.y, tex_a.u, tex_a.v);
+        shader.draw_quad(0.0, -1.0, 1.0, 0.0, tex_c.y, tex_c.u, tex_c.v);
+    }
+}
+
 fn render_pyramid_subimage(
     window: &mut glfw::Window,
     shader: &YuvQuadShader,
@@ -737,11 +870,97 @@ fn main() {
     glfw.window_hint(WindowHint::RefreshRate(Some(240)));
     glfw.window_hint(WindowHint::ContextVersion(2, 1));
 
-    let mut final_results = existing_results;
+    // Create window once before the loop
+    let (mon_w, mon_h) = glfw.with_connected_monitors(|_, monitors| {
+        if let Some(mon) = monitors.first() {
+            if let Some(mode) = mon.get_video_mode() {
+                return (mode.width, mode.height);
+            }
+        }
+        (1280, 720)
+    });
 
-    // Prefetch and pre-decode the first trial in the background.
+    let (mut window, events) = if borderless {
+        glfw.window_hint(WindowHint::Decorated(false));
+        let (mut w, e) = glfw
+            .create_window(mon_w, mon_h, "GAIM240 Player", glfw::WindowMode::Windowed)
+            .unwrap();
+        w.set_pos(0, 0);
+        (w, e)
+    } else {
+        glfw.with_connected_monitors(|glfw_ref, monitors| {
+            if let Some(mon) = monitors.first() {
+                glfw_ref
+                    .create_window(mon_w, mon_h, "GAIM240 Player", glfw::WindowMode::FullScreen(mon))
+                    .unwrap()
+            } else {
+                glfw_ref
+                    .create_window(1280, 720, "GAIM240 Player", glfw::WindowMode::Windowed)
+                    .unwrap()
+            }
+        })
+    };
+
+    window.make_current();
+    window.set_key_polling(true);
+    if no_vsync {
+        glfw.set_swap_interval(glfw::SwapInterval::None);
+    } else {
+        glfw.set_swap_interval(glfw::SwapInterval::Sync(1));
+    }
+
+    gl::load_with(|s| window.get_proc_address(s) as *const _);
+
+    let shader = YuvQuadShader::new();
+    let tex_a = create_yuv_textures();
+    let tex_ref = create_yuv_textures();
+    let tex_c = create_yuv_textures();
+
+    // Session-wide GPU Warmup Phase (60 dummy black frames render)
+    {
+        use std::io::Write;
+        print!("Warming up GPU and compiling shaders... ");
+        std::io::stdout().flush().ok();
+        let dummy_data = vec![0u8; FRAME_SIZE];
+        let y_ptr = &dummy_data[0];
+        let u_ptr = &dummy_data[Y_SIZE];
+        let v_ptr = &dummy_data[Y_SIZE + UV_SIZE];
+        unsafe {
+            gl::ActiveTexture(gl::TEXTURE0);
+            gl::BindTexture(gl::TEXTURE_2D, tex_a.y);
+            gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32, gl::RED, gl::UNSIGNED_BYTE, y_ptr as *const _ as *const _);
+            gl::ActiveTexture(gl::TEXTURE1);
+            gl::BindTexture(gl::TEXTURE_2D, tex_a.u);
+            gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, UV_WIDTH as i32, UV_HEIGHT as i32, gl::RED, gl::UNSIGNED_BYTE, u_ptr as *const _ as *const _);
+            gl::ActiveTexture(gl::TEXTURE2);
+            gl::BindTexture(gl::TEXTURE_2D, tex_a.v);
+            gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, UV_WIDTH as i32, UV_HEIGHT as i32, gl::RED, gl::UNSIGNED_BYTE, v_ptr as *const _ as *const _);
+        }
+        for _ in 0..60 {
+            unsafe {
+                gl::Viewport(0, 0, mon_w as i32, mon_h as i32);
+                gl::ClearColor(0.02, 0.02, 0.03, 1.0);
+                gl::Clear(gl::COLOR_BUFFER_BIT);
+                shader.draw_quad(-0.5, 0.0, 0.5, 1.0, tex_a.y, tex_a.u, tex_a.v);
+                shader.draw_quad(-1.0, -1.0, 0.0, 0.0, tex_a.y, tex_a.u, tex_a.v);
+                shader.draw_quad(0.0, -1.0, 1.0, 0.0, tex_a.y, tex_a.u, tex_a.v);
+            }
+            window.swap_buffers();
+            glfw.poll_events();
+            std::thread::sleep(std::time::Duration::from_millis(4));
+        }
+        println!("Done.");
+    }
+
+    // Synchronously pre-decode Trial 1 in parallel threads to eliminate any background activity during Pass 1
+    println!("Pre-decoding Trial 1 (fully) at session startup... ");
+    let t_pre_start = Instant::now();
     let first_trial = active_trials[0].clone();
-    let mut next_tf_handle = Some(thread::spawn(move || decode_trial_parallel(&first_trial)));
+    let tf_first = decode_trial_parallel(&first_trial);
+    let t_pre_done = t_pre_start.elapsed().as_secs_f64();
+    println!("Done ({:.2}s)", t_pre_done);
+
+    let mut final_results = existing_results;
 
     for (idx, trial) in active_trials.iter().enumerate() {
         use std::io::Write;
@@ -754,20 +973,89 @@ fn main() {
         );
         std::io::stdout().flush().unwrap();
 
-        let t0 = Instant::now();
-        let tf = next_tf_handle.take().unwrap().join().unwrap();
-        let t_load = t0.elapsed().as_secs_f64();
+        // Update window title dynamically
+        let title = format!(
+            "Rust Perception Experiment | Subject: {} | Trial {}/{}",
+            subject_id,
+            idx + 1,
+            active_trials.len()
+        );
+        window.set_title(&title);
 
-        // Spawn background pre-decoding for the next trial
-        if idx + 1 < active_trials.len() {
-            let next_trial = active_trials[idx + 1].clone();
-            next_tf_handle = Some(thread::spawn(move || decode_trial_parallel(&next_trial)));
+        let t_load_start = Instant::now();
+
+        let mut child_left: Option<std::process::Child> = None;
+        let mut child_ref: Option<std::process::Child> = None;
+        let mut child_right: Option<std::process::Child> = None;
+
+        let mut rx_left = None;
+        let mut rx_ref = None;
+        let mut rx_right = None;
+
+        let mut recycle_left = None;
+        let mut recycle_ref = None;
+        let mut recycle_right = None;
+
+        if idx > 0 {
+            child_left = Some(spawn_ffmpeg_cmd(&trial.left_vid.path));
+            child_ref = Some(spawn_ffmpeg_cmd(&trial.ref_vid.path));
+            child_right = Some(spawn_ffmpeg_cmd(&trial.right_vid.path));
+
+            let decoded_left = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let decoded_ref = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let decoded_right = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+            macro_rules! make_stream {
+                ($child:expr, $counter:expr) => {{
+                    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PRELOAD_LIMIT + 3);
+                    let (recycle_tx, recycle_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PRELOAD_LIMIT + 3);
+                    for _ in 0..(PRELOAD_LIMIT + 3) {
+                        recycle_tx.send(vec![0u8; FRAME_SIZE]).ok();
+                    }
+                    let mut out = $child.as_mut().unwrap().stdout.take().unwrap();
+                    let counter_clone = std::sync::Arc::clone(&$counter);
+                    std::thread::spawn(move || {
+                        while let Ok(mut buf) = recycle_rx.recv() {
+                            if out.read_exact(&mut buf).is_err() {
+                                break;
+                            }
+                            if ready_tx.send(buf).is_err() {
+                                break;
+                            }
+                            counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    });
+                    (ready_rx, recycle_tx)
+                }};
+            }
+
+            let (rl, recl) = make_stream!(child_left, decoded_left);
+            let (rr, recr) = make_stream!(child_ref, decoded_ref);
+            let (rrr, recrr) = make_stream!(child_right, decoded_right);
+
+            rx_left = Some(rl);
+            rx_ref = Some(rr);
+            rx_right = Some(rrr);
+
+            recycle_left = Some(recl);
+            recycle_ref = Some(recr);
+            recycle_right = Some(recrr);
+
+            while decoded_left.load(std::sync::atomic::Ordering::SeqCst) < PRELOAD_LIMIT
+                || decoded_ref.load(std::sync::atomic::Ordering::SeqCst) < PRELOAD_LIMIT
+                || decoded_right.load(std::sync::atomic::Ordering::SeqCst) < PRELOAD_LIMIT
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
         }
 
-        if tf.left_stream.num_frames == 0
-            || tf.ref_stream.num_frames == 0
-            || tf.right_stream.num_frames == 0
-        {
+        let t_load = if idx == 0 {
+            t_pre_done
+        } else {
+            t_load_start.elapsed().as_secs_f64()
+        };
+
+        if idx > 0 && (child_left.is_none() || child_ref.is_none() || child_right.is_none()) {
             println!(
                 " Error: Could not decode video frames for trial #{}. Skipping.",
                 trial.master_trial_id
@@ -776,75 +1064,6 @@ fn main() {
         }
 
         println!(" Pre-Decoded ({:.2}s) -> Presenting Locked 239.76 FPS Pyramid", t_load);
-
-        let (mon_w, mon_h) = glfw.with_connected_monitors(|_, monitors| {
-            if let Some(mon) = monitors.first() {
-                if let Some(mode) = mon.get_video_mode() {
-                    return (mode.width, mode.height);
-                }
-            }
-            (1280, 720)
-        });
-
-        let title = format!(
-            "Rust Perception Experiment | Subject: {} | Trial {}/{}",
-            subject_id,
-            idx + 1,
-            active_trials.len()
-        );
-
-        let (mut window, events) = if borderless {
-            glfw.window_hint(WindowHint::Decorated(false));
-            let (mut w, e) = glfw
-                .create_window(mon_w, mon_h, &title, glfw::WindowMode::Windowed)
-                .unwrap();
-            w.set_pos(0, 0);
-            (w, e)
-        } else {
-            glfw.with_connected_monitors(|glfw_ref, monitors| {
-                if let Some(mon) = monitors.first() {
-                    glfw_ref
-                        .create_window(mon_w, mon_h, &title, glfw::WindowMode::FullScreen(mon))
-                        .unwrap()
-                } else {
-                    glfw_ref
-                        .create_window(1280, 720, &title, glfw::WindowMode::Windowed)
-                        .unwrap()
-                }
-            })
-        };
-
-        window.make_current();
-        window.set_key_polling(true);
-        if no_vsync {
-            glfw.set_swap_interval(glfw::SwapInterval::None);
-        } else {
-            glfw.set_swap_interval(glfw::SwapInterval::Sync(1));
-        }
-
-        gl::load_with(|s| window.get_proc_address(s) as *const _);
-
-        let shader = YuvQuadShader::new();
-        let tex_a = create_yuv_textures();
-        let tex_ref = create_yuv_textures();
-        let tex_c = create_yuv_textures();
-
-        // Warmup render
-        for _ in 0..60 {
-            render_pyramid_subimage(
-                &mut window,
-                &shader,
-                &tex_a,
-                &tex_ref,
-                &tex_c,
-                &tf.left_stream,
-                &tf.ref_stream,
-                &tf.right_stream,
-                0,
-            );
-            window.swap_buffers();
-            glfw.poll_events();
-        }
 
         let start_time = Instant::now();
         let mut swap_timestamps: Vec<Instant> = Vec::new();
@@ -864,17 +1083,53 @@ fn main() {
                 }
             }
 
-            render_pyramid_subimage(
+            let mut buf_left = None;
+            let mut buf_ref = None;
+            let mut buf_right = None;
+
+            let frame_left: &[u8] = if idx == 0 {
+                let frame_idx = step % tf_first.left_stream.num_frames;
+                let offset = frame_idx * FRAME_SIZE;
+                &tf_first.left_stream.data[offset .. offset + FRAME_SIZE]
+            } else {
+                buf_left = Some(match rx_left.as_ref().unwrap().recv() { Ok(b) => b, Err(_) => break });
+                buf_left.as_ref().unwrap()
+            };
+
+            let frame_ref: &[u8] = if idx == 0 {
+                let frame_idx = step % tf_first.ref_stream.num_frames;
+                let offset = frame_idx * FRAME_SIZE;
+                &tf_first.ref_stream.data[offset .. offset + FRAME_SIZE]
+            } else {
+                buf_ref = Some(match rx_ref.as_ref().unwrap().recv() { Ok(b) => b, Err(_) => break });
+                buf_ref.as_ref().unwrap()
+            };
+
+            let frame_right: &[u8] = if idx == 0 {
+                let frame_idx = step % tf_first.right_stream.num_frames;
+                let offset = frame_idx * FRAME_SIZE;
+                &tf_first.right_stream.data[offset .. offset + FRAME_SIZE]
+            } else {
+                buf_right = Some(match rx_right.as_ref().unwrap().recv() { Ok(b) => b, Err(_) => break });
+                buf_right.as_ref().unwrap()
+            };
+
+            render_pyramid_on_the_fly(
                 &mut window,
                 &shader,
                 &tex_a,
                 &tex_ref,
                 &tex_c,
-                &tf.left_stream,
-                &tf.ref_stream,
-                &tf.right_stream,
-                step,
+                frame_left,
+                frame_ref,
+                frame_right,
             );
+
+            if idx > 0 {
+                recycle_left.as_ref().unwrap().send(buf_left.unwrap()).ok();
+                recycle_ref.as_ref().unwrap().send(buf_ref.unwrap()).ok();
+                recycle_right.as_ref().unwrap().send(buf_right.unwrap()).ok();
+            }
 
             swap_timestamps.push(Instant::now());
             window.swap_buffers();
@@ -902,16 +1157,13 @@ fn main() {
             }
         }
 
-        unsafe {
-            let textures = [
-                tex_a.y, tex_a.u, tex_a.v,
-                tex_ref.y, tex_ref.u, tex_ref.v,
-                tex_c.y, tex_c.u, tex_c.v,
-            ];
-            gl::DeleteTextures(9, textures.as_ptr());
+        if idx > 0 {
+            let _ = child_left.as_mut().unwrap().kill();
+            let _ = child_ref.as_mut().unwrap().kill();
+            let _ = child_right.as_mut().unwrap().kill();
         }
-        drop(tf);
-        drop(window);
+
+        // Textures and window persist across trials
 
         if quit || choice.is_none() {
             println!("\nExperiment stopped early by user. Progress saved.");
