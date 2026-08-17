@@ -22,7 +22,7 @@ const UV_WIDTH: usize = WIDTH;
 const UV_HEIGHT: usize = HEIGHT;
 const UV_SIZE: usize = Y_SIZE;
 const FRAME_SIZE: usize = Y_SIZE + UV_SIZE + UV_SIZE; // YUV444P frame size = 2,764,800 bytes
-const PRELOAD_LIMIT: usize = 1200; // Shock absorber buffer size to maintain 240Hz under hardware limits
+const PRELOAD_LIMIT: usize = 500; // Shock absorber buffer size to maintain 240Hz with ample headspace
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MasterTrial {
@@ -171,7 +171,7 @@ fn spawn_ffmpeg_cmd(path: &str) -> std::process::Child {
         cmd.env("PATH", format!("{};{};{}", dll_dir1, dll_dir2, current_path));
     }
 
-    cmd.args([
+    let child = cmd.args([
             "-hwaccel",
             "cuda",
             "-c:v",
@@ -189,7 +189,20 @@ fn spawn_ffmpeg_cmd(path: &str) -> std::process::Child {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .expect("Failed to spawn ffmpeg")
+        .expect("Failed to spawn ffmpeg");
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        if let Some(ref stdout) = child.stdout {
+            let fd = stdout.as_raw_fd();
+            unsafe {
+                libc::fcntl(fd, libc::F_SETPIPE_SZ, 1_048_576);
+            }
+        }
+    }
+
+    child
 }
 
 fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {

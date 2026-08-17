@@ -17,7 +17,13 @@ fn get_png_dataset_dir() -> PathBuf {
             return p;
         }
     }
-    for fallback in &["../GAIM240_refs_png", "D:\\GAIM240_refs_png", "C:\\GAIM240_refs_png"] {
+    for fallback in &[
+        "/home/jv495/Downloads/GAIM240_refs_png",
+        "../GAIM240_refs_png",
+        "../../Downloads/GAIM240_refs_png",
+        "D:\\GAIM240_refs_png",
+        "C:\\GAIM240_refs_png",
+    ] {
         let p = PathBuf::from(fallback);
         if p.exists() {
             return p;

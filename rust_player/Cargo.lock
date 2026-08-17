@@ -207,21 +207,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libmpv2"
-version = "3.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28b470120796126b67e4056ccb44ed1916ef711a948f24e7e5a30de87761a694"
-dependencies = [
- "libmpv2-sys",
-]
-
-[[package]]
-name = "libmpv2-sys"
-version = "4.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edb32cabe7176b7d270b0dca6ff418b75187ae8d3854423e3d06fbff376841e4"
-
-[[package]]
 name = "log"
 version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -368,8 +353,8 @@ dependencies = [
  "csv",
  "gl",
  "glfw",
+ "libc",
  "libloading",
- "libmpv2",
  "png",
  "rand",
  "rayon",

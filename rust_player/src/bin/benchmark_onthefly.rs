@@ -17,7 +17,7 @@ const WIDTH: usize = 1280;
 const HEIGHT: usize = 720;
 const Y_SIZE: usize = WIDTH * HEIGHT;
 const FRAME_SIZE: usize = Y_SIZE * 3; // YUV444p: Y, U, and V are all full size (1280x720) = 2,764,800 bytes
-const PRELOAD_LIMIT: usize = 800; // Shock absorber buffer size to maintain 240Hz under hardware limits
+const PRELOAD_LIMIT: usize = 500; // Shock absorber buffer size to maintain 240Hz with ample headspace
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MasterTrial {
@@ -254,7 +254,7 @@ fn spawn_ffmpeg_cmd(path: &str) -> Child {
         cmd.env("PATH", format!("{};{};{}", dll_dir1, dll_dir2, current_path));
     }
 
-    cmd.args([
+    let child = cmd.args([
             "-hwaccel",
             "cuda",
             "-c:v",
@@ -270,7 +270,20 @@ fn spawn_ffmpeg_cmd(path: &str) -> Child {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .expect("Failed to spawn ffmpeg")
+        .expect("Failed to spawn ffmpeg");
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        if let Some(ref stdout) = child.stdout {
+            let fd = stdout.as_raw_fd();
+            unsafe {
+                libc::fcntl(fd, libc::F_SETPIPE_SZ, 1_048_576);
+            }
+        }
+    }
+
+    child
 }
 
 fn create_empty_yuv_textures() -> (u32, u32, u32) {

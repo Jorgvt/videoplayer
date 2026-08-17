@@ -16,7 +16,13 @@ fn get_raw_dataset_dir() -> PathBuf {
             return p;
         }
     }
-    for fallback in &["../GAIM240_refs_raw", "D:\\GAIM240_refs_raw", "C:\\GAIM240_refs_raw"] {
+    for fallback in &[
+        "/home/jv495/Downloads/GAIM240_refs_raw",
+        "../GAIM240_refs_raw",
+        "../../Downloads/GAIM240_refs_raw",
+        "D:\\GAIM240_refs_raw",
+        "C:\\GAIM240_refs_raw",
+    ] {
         let p = PathBuf::from(fallback);
         if p.exists() {
             return p;
@@ -227,14 +233,25 @@ fn main() {
         return;
     }
 
-    let left_path = dataset_dir.join("attic.rgb");
-    let ref_path = dataset_dir.join("bistro_exterior.rgb");
-    let right_path = dataset_dir.join("bistro_interior.rgb");
+    let mut rgb_files = Vec::new();
+    if let Ok(entries) = fs::read_dir(&dataset_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_file() && p.extension().map_or(false, |ext| ext == "rgb") {
+                rgb_files.push(p);
+            }
+        }
+    }
+    rgb_files.sort();
 
-    if !left_path.exists() || !ref_path.exists() || !right_path.exists() {
-        println!("Error: Converted .rgb files (attic.rgb, bistro_exterior.rgb, bistro_interior.rgb) not found in {:?}", dataset_dir);
+    if rgb_files.len() < 3 {
+        println!("Error: Need at least 3 .rgb files inside {:?}, found {}", dataset_dir, rgb_files.len());
         return;
     }
+
+    let left_path = rgb_files[0].clone();
+    let ref_path = rgb_files[1].clone();
+    let right_path = rgb_files[2].clone();
 
     println!("\n=================================================================");
     println!("  GAIM240 CONCATENATED RAW RGB24 PLAYBACK BENCHMARK PLAYER");
