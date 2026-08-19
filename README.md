@@ -12,14 +12,30 @@ We incorporate **Active SAmpling for Pairwise comparisons (ASAP)** ([gfxdisp/asa
 
 Instead of evaluating all static trials, ASAP dynamically selects the most informative video pair $(i, j)$ maximizing Expected Information Gain (Entropy Reduction).
 
+### Dataset & Distortion Space:
+* **9 Scenes**: `attic`, `bistro_exterior`, `bistro_interior`, `classroom`, `landscape`, `marbles`, `pink_room`, `subway`, `zeroday`.
+* **9 Distortions (3 levels each: `level0`, `level1`, `level2`)**:
+  1. `dlss_rr`
+  2. `duration_flicker` *(new)*
+  3. `judder`
+  4. `motion_noise`
+  5. `motion_resolution`
+  6. `noise_colors`
+  7. `restir`
+  8. `stutter`
+  9. `temporal-resolution-multiplexing`
+* **Total Conditions**: **243 conditions** (9 scenes $\times$ 9 distortions $\times$ 3 intensity levels = 243 distorted video conditions + 9 scene references = 252 videos).
+
 ### Candidate Pair Space:
-* **`all_trials_bank.csv`**: Contains all **2,484 valid intra-scene candidate pairs** across the 9 scenes ($9 \times 276 = 2,484$).
+* **`all_trials_bank.csv`**: Contains all **3,159 valid intra-scene candidate pairs** across the 9 scenes ($9 \text{ scenes} \times 351 \text{ pairs/scene} = 3,159$).
+  * **Intra-Scene, Intra-Distortion**: 243 pairs ($9 \text{ scenes} \times 9 \text{ distortions} \times 3 \text{ level pairs} = 243$).
+  * **Intra-Scene, Inter-Distortion**: 2,916 pairs ($9 \text{ scenes} \times \binom{9}{2} \times (3 \times 3) = 2,916$).
 * **Intra-Scene, Inter-Distortion**: Cross-metric comparisons within the same scene (e.g., `pink_room:dlss_rr_level1` vs `pink_room:judder_level2`).
 * **Intra-Scene, Intra-Distortion**: Same-metric comparisons within the same scene (e.g., `pink_room:dlss_rr_level1` vs `pink_room:dlss_rr_level2`).
 
 ### Modes:
 1. **Global Mode (DEFAULT, `--mode=global`)**:
-   * Pools all **216 video conditions across all 9 scenes** to construct a single, unified **Global JND Visual Quality Scale**.
+   * Pools all **243 video conditions across all 9 scenes** to construct a single, unified **Global JND Visual Quality Scale**.
 2. **Intra-Scene Mode (`--mode=intra --scene=marbles`)**:
    * Restricts sampling to conditions within a single scene.
 
@@ -91,7 +107,7 @@ cd rust_player
 
 ## Codebase File Map
 
-* **[all_trials_bank.csv](all_trials_bank.csv)** – Master CSV database containing all **2,484 valid intra-scene comparison pairs** across the dataset.
+* **[all_trials_bank.csv](all_trials_bank.csv)** – Master CSV database containing all **3,159 valid intra-scene comparison pairs** across the dataset.
 * **[run_asap_experiment.py](run_asap_experiment.py)** – Active Sampling experiment controller integrating `gfxdisp/asap` (Global default & Intra modes) with `asap_trial`.
 * **[rust_player/src/bin/asap_trial.rs](rust_player/src/bin/asap_trial.rs)** – Dedicated Rust 240Hz single-trial visualizer binary for 2AFC active sampling.
 * **[rust_player/src/main.rs](rust_player/src/main.rs)** – Primary Rust 240Hz full perception experiment runner.

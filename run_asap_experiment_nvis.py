@@ -24,6 +24,8 @@ import sys
 import time
 from pathlib import Path
 
+from platform_utils import get_dataset_dir, set_native_lib_env, set_native_bin_env
+
 import numpy as np
 
 # Add local asap/python directory to import path
@@ -41,7 +43,7 @@ except ImportError:
 
 def discover_conditions_and_pairs(dataset_dir: Path, bank_path: Path, target_scene: str = None):
     """
-    Scans dataset and all_trials_bank.csv (2,484 candidate pairs) to discover valid video conditions and candidate pairs.
+    Scans dataset and all_trials_bank.csv (3,159 candidate pairs) to discover valid video conditions and candidate pairs.
     Ensures that every candidate pair consists of Vid1 and Vid2 from the SAME scene.
     """
     scenes = ["attic", "bistro_exterior", "bistro_interior", "classroom", 
@@ -119,14 +121,15 @@ def run_single_rust_trial(subject_id: str, trial_num: int, scene: str, ref_path:
     if temp_res.exists():
         temp_res.unlink()
 
-    rust_bin = Path("rust_player/target/release/asap_trial")
+    exe_suffix = ".exe" if sys.platform == "win32" else ""
+    rust_bin = Path(f"rust_player/target/release/asap_trial{exe_suffix}")
     if not rust_bin.exists():
-        rust_bin = Path("rust_player/target/debug/asap_trial")
+        rust_bin = Path(f"rust_player/target/debug/asap_trial{exe_suffix}")
 
     if not rust_bin.exists():
         print("Building asap_trial binary...", flush=True)
         subprocess.run(["cargo", "build", "--release", "--bin", "asap_trial"], cwd="rust_player", check=True)
-        rust_bin = Path("rust_player/target/release/asap_trial")
+        rust_bin = Path(f"rust_player/target/release/asap_trial{exe_suffix}")
 
     cmd = [
         str(rust_bin.resolve()),
@@ -143,7 +146,7 @@ def run_single_rust_trial(subject_id: str, trial_num: int, scene: str, ref_path:
         cmd.append("--borderless")
 
     env = os.environ.copy()
-    env["LD_LIBRARY_PATH"] = "rust_player/lib/usr/lib/x86_64-linux-gnu:" + env.get("LD_LIBRARY_PATH", "")
+    set_native_lib_env(env)  # sets LD_LIBRARY_PATH on Linux, PATH on Windows
 
     proc = subprocess.run(cmd, cwd=".", env=env, capture_output=True, text=True)
 
@@ -172,7 +175,7 @@ def run_single_nvis_trial(subject_id: str, trial_num: int, scene: str, ref_path:
     """
     nvis_bin = Path(__file__).parent.parent / "userstudy_v0.2_linux" / "userstudy_v0.2" / "userstudy_patched"
     if not nvis_bin.exists():
-        nvis_bin = Path("/home/jv495/Developer/userstudy_v0.2_linux/userstudy_v0.2/userstudy_patched")
+        nvis_bin = Path(os.environ.get("NVIS_BIN", "/home/jv495/Developer/userstudy_v0.2_linux/userstudy_v0.2/userstudy_patched"))
         
     if not nvis_bin.exists():
         print(f"Error: Nvidia player not found at {nvis_bin.resolve()}", flush=True)
@@ -180,9 +183,8 @@ def run_single_nvis_trial(subject_id: str, trial_num: int, scene: str, ref_path:
 
     # Configure env to find dynamic libraries and ffmpeg
     env = os.environ.copy()
-    wrapper_bin_dir = str((Path(__file__).parent / "bin").resolve())
-    env["PATH"] = wrapper_bin_dir + ":" + str((Path(__file__).parent / "rust_player" / "lib" / "usr" / "bin").resolve()) + ":" + env.get("PATH", "")
-    env["LD_LIBRARY_PATH"] = str((Path(__file__).parent / "rust_player" / "lib" / "usr" / "lib" / "x86_64-linux-gnu").resolve()) + ":" + env.get("LD_LIBRARY_PATH", "")
+    set_native_bin_env(env)   # prepends bundled ffmpeg/bin dir to PATH (cross-platform)
+    set_native_lib_env(env)   # sets LD_LIBRARY_PATH on Linux, PATH on Windows
 
     # Commands for userstudy
     cmd = [
@@ -269,7 +271,7 @@ def main():
     parser.add_argument("--no-pacer", action="store_false", dest="pacer", help="Disable 240Hz software frame pacer")
     parser.add_argument("--no-vsync", "--uncapped", action="store_true", help="Disable VSync for uncapped maximum presentation throughput")
     parser.add_argument("--borderless", action="store_true", help="Enable borderless windowed mode")
-    parser.add_argument("--dataset", type=str, default="/home/jv495/Datasets/GAIM240", help="Path to GAIM240 dataset")
+    parser.add_argument("--dataset", type=str, default=str(get_dataset_dir()), help="Path to GAIM240 dataset")
     parser.add_argument("--bank", type=str, default="all_trials_bank.csv", help="Path to master trials bank CSV")
     parser.add_argument("--player", type=str, choices=["rust", "nvis"], default="rust",
                         help="Video player engine to use: 'rust' (default native player) or 'nvis' (Nvidia player)")
@@ -389,7 +391,7 @@ def main():
                 args.subject, completed_trials + 1, display_scene, ref_path, left_cond, right_cond
             )
         else:
-            print("  [Presenting 240Hz Pyramid Window - Waiting for participant response (A/D or ←/→)]...", flush=True)
+            print("  [Presenting 240Hz Pyramid Window - Waiting for participant response (A/D or Left/Right Arrow)]...", flush=True)
             choice, resp_time, fps = run_single_rust_trial(
                 args.subject, completed_trials + 1, display_scene, ref_path, left_cond, right_cond,
                 pacer=args.pacer, no_vsync=args.no_vsync, borderless=args.borderless

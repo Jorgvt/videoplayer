@@ -17,6 +17,7 @@ const WIDTH: usize = 1280;
 const HEIGHT: usize = 720;
 const Y_SIZE: usize = WIDTH * HEIGHT;
 const FRAME_SIZE: usize = Y_SIZE * 3; // YUV444p: Y, U, and V are all full size (1280x720) = 2,764,800 bytes
+const PRELOAD_LIMIT: usize = 500; // Shock absorber buffer size to maintain 240Hz with ample headspace
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MasterTrial {
@@ -115,7 +116,18 @@ struct ExperimentResult {
     pre_decode_time_sec: f64,
 }
 
-fn spawn_ffmpeg_cmd(path: &str) -> Child {
+fn decode_video_cmd(path: String) -> Vec<u8> {
+    use std::process::Command;
+    #[cfg(target_os = "windows")]
+    let ffmpeg_bin = if std::path::Path::new("rust_player/lib/windows/bin/ffmpeg.exe").exists() {
+        "rust_player/lib/windows/bin/ffmpeg.exe"
+    } else if std::path::Path::new("lib/windows/bin/ffmpeg.exe").exists() {
+        "lib/windows/bin/ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
+
+    #[cfg(not(target_os = "windows"))]
     let ffmpeg_bin = if Path::new("rust_player/lib/usr/bin/ffmpeg").exists() {
         "rust_player/lib/usr/bin/ffmpeg"
     } else if Path::new("lib/usr/bin/ffmpeg").exists() {
@@ -124,12 +136,125 @@ fn spawn_ffmpeg_cmd(path: &str) -> Child {
         "ffmpeg"
     };
 
-    Command::new(ffmpeg_bin)
-        .env(
-            "LD_LIBRARY_PATH",
-            "rust_player/lib/usr/lib/x86_64-linux-gnu:lib/usr/lib/x86_64-linux-gnu",
-        )
-        .args([
+    let mut cmd = Command::new(ffmpeg_bin);
+
+    #[cfg(target_os = "linux")]
+    cmd.env(
+        "LD_LIBRARY_PATH",
+        "rust_player/lib/usr/lib/x86_64-linux-gnu:lib/usr/lib/x86_64-linux-gnu",
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        let dll_dir1 = "rust_player/lib/windows/bin";
+        let dll_dir2 = "lib/windows/bin";
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        cmd.env("PATH", format!("{};{};{}", dll_dir1, dll_dir2, current_path));
+    }
+
+    let mut raw_data = Vec::with_capacity(1200 * FRAME_SIZE);
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::net::TcpListener;
+        use std::process::Stdio;
+        use std::os::windows::process::CommandExt;
+
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x00004000;
+        cmd.creation_flags(BELOW_NORMAL_PRIORITY_CLASS);
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind TCP listener");
+        let port = listener.local_addr().unwrap().port();
+
+        cmd.args([
+            "-hwaccel",
+            "cuda",
+            "-c:v",
+            "hevc_cuvid",
+            "-i",
+            &path,
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv444p",
+            &format!("tcp://127.0.0.1:{}", port),
+        ]);
+
+        if let Ok(mut child) = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+            if let Ok((mut stream, _)) = listener.accept() {
+                std::io::copy(&mut stream, &mut raw_data).ok();
+            }
+            child.wait().ok();
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        cmd.args([
+            "-hwaccel",
+            "cuda",
+            "-c:v",
+            "hevc_cuvid",
+            "-i",
+            &path,
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv444p",
+            "pipe:1",
+        ]);
+
+        if let Ok(mut child) = cmd.stdout(std::process::Stdio::piped()).spawn() {
+            if let Some(mut stdout) = child.stdout.take() {
+                std::io::copy(&mut stdout, &mut raw_data).ok();
+            }
+            child.wait().ok();
+        }
+    }
+
+    raw_data
+}
+
+fn spawn_ffmpeg_cmd(path: &str) -> Child {
+    #[cfg(target_os = "windows")]
+    let ffmpeg_bin = if std::path::Path::new("rust_player/lib/windows/bin/ffmpeg.exe").exists() {
+        "rust_player/lib/windows/bin/ffmpeg.exe"
+    } else if std::path::Path::new("lib/windows/bin/ffmpeg.exe").exists() {
+        "lib/windows/bin/ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let ffmpeg_bin = if Path::new("rust_player/lib/usr/bin/ffmpeg").exists() {
+        "rust_player/lib/usr/bin/ffmpeg"
+    } else if Path::new("lib/usr/bin/ffmpeg").exists() {
+        "lib/usr/bin/ffmpeg"
+    } else {
+        "ffmpeg"
+    };
+
+    let mut cmd = Command::new(ffmpeg_bin);
+
+    #[cfg(target_os = "linux")]
+    cmd.env(
+        "LD_LIBRARY_PATH",
+        "rust_player/lib/usr/lib/x86_64-linux-gnu:lib/usr/lib/x86_64-linux-gnu",
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x00004000;
+        cmd.creation_flags(BELOW_NORMAL_PRIORITY_CLASS);
+
+        let dll_dir1 = "rust_player/lib/windows/bin";
+        let dll_dir2 = "lib/windows/bin";
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        cmd.env("PATH", format!("{};{};{}", dll_dir1, dll_dir2, current_path));
+    }
+
+    let child = cmd.args([
             "-hwaccel",
             "cuda",
             "-c:v",
@@ -145,7 +270,20 @@ fn spawn_ffmpeg_cmd(path: &str) -> Child {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .expect("Failed to spawn ffmpeg")
+        .expect("Failed to spawn ffmpeg");
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        if let Some(ref stdout) = child.stdout {
+            let fd = stdout.as_raw_fd();
+            unsafe {
+                libc::fcntl(fd, libc::F_SETPIPE_SZ, 1_048_576);
+            }
+        }
+    }
+
+    child
 }
 
 fn create_empty_yuv_textures() -> (u32, u32, u32) {
@@ -194,30 +332,24 @@ fn create_empty_yuv_textures() -> (u32, u32, u32) {
 }
 
 unsafe fn upload_yuv_frame_subimage(tex_y: u32, tex_u: u32, tex_v: u32, raw_data: &[u8]) {
-    let y_ptr = &raw_data[0];
-    let u_ptr = &raw_data[Y_SIZE];
-    let v_ptr = &raw_data[Y_SIZE * 2];
+    let y_ptr = raw_data.as_ptr();
+    let u_ptr = raw_data[Y_SIZE..].as_ptr();
+    let v_ptr = raw_data[Y_SIZE * 2..].as_ptr();
 
     gl::ActiveTexture(gl::TEXTURE0);
     gl::BindTexture(gl::TEXTURE_2D, tex_y);
-    gl::TexSubImage2D(
-        gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32,
-        gl::RED, gl::UNSIGNED_BYTE, y_ptr as *const _ as *const _
-    );
+    gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32,
+        gl::RED, gl::UNSIGNED_BYTE, y_ptr as *const _);
 
     gl::ActiveTexture(gl::TEXTURE1);
     gl::BindTexture(gl::TEXTURE_2D, tex_u);
-    gl::TexSubImage2D(
-        gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32,
-        gl::RED, gl::UNSIGNED_BYTE, u_ptr as *const _ as *const _
-    );
+    gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32,
+        gl::RED, gl::UNSIGNED_BYTE, u_ptr as *const _);
 
     gl::ActiveTexture(gl::TEXTURE2);
     gl::BindTexture(gl::TEXTURE_2D, tex_v);
-    gl::TexSubImage2D(
-        gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32,
-        gl::RED, gl::UNSIGNED_BYTE, v_ptr as *const _ as *const _
-    );
+    gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32,
+        gl::RED, gl::UNSIGNED_BYTE, v_ptr as *const _);
 }
 
 struct YuvQuadShader {
@@ -400,6 +532,28 @@ fn render_pyramid_quads(
     }
 }
 
+fn get_dataset_dir() -> std::path::PathBuf {
+    if let Ok(env_val) = std::env::var("GAIM240_DATASET_DIR") {
+        let p = std::path::PathBuf::from(env_val);
+        if p.exists() {
+            return p;
+        }
+    }
+    for rel_path in &["../../Datasets/GAIM240", "../Datasets/GAIM240", "Datasets/GAIM240"] {
+        let p = std::path::PathBuf::from(rel_path);
+        if p.exists() {
+            return p;
+        }
+    }
+    for fallback in &["D:\\GAIM240", "C:\\Datasets\\GAIM240", "/home/jv495/Datasets/GAIM240", "/home/jv495/Developer/Datasets/GAIM240"] {
+        let p = std::path::PathBuf::from(fallback);
+        if p.exists() {
+            return p;
+        }
+    }
+    std::path::PathBuf::from("GAIM240")
+}
+
 fn hash_subject(subject_id: &str) -> u64 {
     let mut s = std::collections::hash_map::DefaultHasher::new();
     subject_id.hash(&mut s);
@@ -458,19 +612,24 @@ fn main() {
     for (i, row) in shuffled_master.iter().enumerate() {
         let flip: bool = rand::Rng::gen(&mut rng);
 
+        let dataset_dir = get_dataset_dir();
+        let left_vid_path = dataset_dir.join(if flip { &row.vid2_filename } else { &row.vid1_filename }).to_string_lossy().to_string();
+        let right_vid_path = dataset_dir.join(if flip { &row.vid1_filename } else { &row.vid2_filename }).to_string_lossy().to_string();
+        let ref_vid_path = dataset_dir.join(&row.ref_filename).to_string_lossy().to_string();
+
         let left_vid = if flip {
             VideoInfo {
                 filename: row.vid2_filename.clone(),
                 metric: row.vid2_metric.clone(),
                 level: row.vid2_level.clone(),
-                path: row.vid2_path.clone(),
+                path: left_vid_path,
             }
         } else {
             VideoInfo {
                 filename: row.vid1_filename.clone(),
                 metric: row.vid1_metric.clone(),
                 level: row.vid1_level.clone(),
-                path: row.vid1_path.clone(),
+                path: left_vid_path,
             }
         };
 
@@ -479,14 +638,14 @@ fn main() {
                 filename: row.vid1_filename.clone(),
                 metric: row.vid1_metric.clone(),
                 level: row.vid1_level.clone(),
-                path: row.vid1_path.clone(),
+                path: right_vid_path,
             }
         } else {
             VideoInfo {
                 filename: row.vid2_filename.clone(),
                 metric: row.vid2_metric.clone(),
                 level: row.vid2_level.clone(),
-                path: row.vid2_path.clone(),
+                path: right_vid_path,
             }
         };
 
@@ -494,7 +653,7 @@ fn main() {
             filename: row.ref_filename.clone(),
             metric: "reference".to_string(),
             level: "ref".to_string(),
-            path: row.ref_path.clone(),
+            path: ref_vid_path,
         };
 
         prepared_trials.push(PreparedTrial {
@@ -542,6 +701,97 @@ fn main() {
     let mut load_times: Vec<f64> = Vec::new();
     let mut bench_csv_results: Vec<ExperimentResult> = Vec::new();
 
+    // Create window once before the loop
+    let (mon_w, mon_h) = glfw.with_connected_monitors(|_, monitors| {
+        if let Some(mon) = monitors.first() {
+            if let Some(mode) = mon.get_video_mode() {
+                return (mode.width, mode.height);
+            }
+        }
+        (1280, 720)
+    });
+
+    let (mut window, events) = glfw.with_connected_monitors(|glfw_ref, monitors| {
+        if let Some(mon) = monitors.first() {
+            glfw_ref
+                .create_window(mon_w, mon_h, "Rust On-the-Fly GPU Decoded", glfw::WindowMode::FullScreen(mon))
+                .unwrap()
+        } else {
+            glfw_ref
+                .create_window(1280, 720, "Rust On-the-Fly GPU Decoded", glfw::WindowMode::Windowed)
+                .unwrap()
+        }
+    });
+
+    window.make_current();
+    window.set_key_polling(true);
+    if no_vsync {
+        glfw.set_swap_interval(glfw::SwapInterval::None);
+    } else {
+        glfw.set_swap_interval(glfw::SwapInterval::Sync(1));
+    }
+
+    gl::load_with(|s| window.get_proc_address(s) as *const _);
+
+    let shader = YuvQuadShader::new();
+    let (tex_left_y, tex_left_u, tex_left_v) = create_empty_yuv_textures();
+    let (tex_ref_y, tex_ref_u, tex_ref_v) = create_empty_yuv_textures();
+    let (tex_right_y, tex_right_u, tex_right_v) = create_empty_yuv_textures();
+
+    // GPU and Shader Warmup Phase to compile pipelines and ramp up clock speeds
+    {
+        use std::io::Write;
+        print!("Warming up GPU and compiling shaders... ");
+        std::io::stdout().flush().ok();
+        let dummy_data = vec![0u8; FRAME_SIZE];
+        let y_ptr = &dummy_data[0];
+        let u_ptr = &dummy_data[Y_SIZE];
+        let v_ptr = &dummy_data[Y_SIZE * 2];
+        unsafe {
+            gl::ActiveTexture(gl::TEXTURE0);
+            gl::BindTexture(gl::TEXTURE_2D, tex_left_y);
+            gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32, gl::RED, gl::UNSIGNED_BYTE, y_ptr as *const _ as *const _);
+            gl::ActiveTexture(gl::TEXTURE1);
+            gl::BindTexture(gl::TEXTURE_2D, tex_left_u);
+            gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32, gl::RED, gl::UNSIGNED_BYTE, u_ptr as *const _ as *const _);
+            gl::ActiveTexture(gl::TEXTURE2);
+            gl::BindTexture(gl::TEXTURE_2D, tex_left_v);
+            gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, WIDTH as i32, HEIGHT as i32, gl::RED, gl::UNSIGNED_BYTE, v_ptr as *const _ as *const _);
+        }
+        for _ in 0..60 {
+            unsafe {
+                gl::Viewport(0, 0, mon_w as i32, mon_h as i32);
+                gl::ClearColor(0.02, 0.02, 0.03, 1.0);
+                gl::Clear(gl::COLOR_BUFFER_BIT);
+                shader.draw_quad(-0.5, 0.0, 0.5, 1.0, tex_left_y, tex_left_u, tex_left_v);
+                shader.draw_quad(-1.0, -1.0, 0.0, 0.0, tex_left_y, tex_left_u, tex_left_v);
+                shader.draw_quad(0.0, -1.0, 1.0, 0.0, tex_left_y, tex_left_u, tex_left_v);
+            }
+            window.swap_buffers();
+            glfw.poll_events();
+            std::thread::sleep(std::time::Duration::from_millis(4));
+        }
+        println!("Done.");
+    }
+
+    // Synchronously pre-decode Trial 1 in parallel threads to eliminate any background activity during Pass 1
+    println!("Pre-decoding Trial 1 (fully) at startup... ");
+    let t_pre_start = Instant::now();
+    let first_trial = active_trials[0].clone();
+    let p_left = first_trial.left_vid.path.clone();
+    let p_ref = first_trial.ref_vid.path.clone();
+    let p_right = first_trial.right_vid.path.clone();
+
+    let h_left = std::thread::spawn(move || decode_video_cmd(p_left));
+    let h_ref = std::thread::spawn(move || decode_video_cmd(p_ref));
+    let h_right = std::thread::spawn(move || decode_video_cmd(p_right));
+
+    let preloaded_left = h_left.join().unwrap();
+    let preloaded_ref = h_ref.join().unwrap();
+    let preloaded_right = h_right.join().unwrap();
+    let t_pre_done = t_pre_start.elapsed().as_secs_f64();
+    println!("Done ({:.2}s)", t_pre_done);
+
     for (idx, trial) in active_trials.iter().enumerate() {
         use std::io::Write;
         print!(
@@ -553,65 +803,88 @@ fn main() {
         );
         std::io::stdout().flush().unwrap();
 
-        let (mon_w, mon_h) = glfw.with_connected_monitors(|_, monitors| {
-            if let Some(mon) = monitors.first() {
-                if let Some(mode) = mon.get_video_mode() {
-                    return (mode.width, mode.height);
-                }
-            }
-            (1280, 720)
-        });
-
+        // Update window title dynamically
         let title = format!("Rust On-the-Fly GPU Decoded | Pass {}/{}", idx + 1, active_trials.len());
+        window.set_title(&title);
 
-        let (mut window, events) = glfw.with_connected_monitors(|glfw_ref, monitors| {
-            if let Some(mon) = monitors.first() {
-                glfw_ref
-                    .create_window(mon_w, mon_h, &title, glfw::WindowMode::FullScreen(mon))
-                    .unwrap()
-            } else {
-                glfw_ref
-                    .create_window(1280, 720, &title, glfw::WindowMode::Windowed)
-                    .unwrap()
-            }
-        });
-
-        window.make_current();
-        window.set_key_polling(true);
-        if no_vsync {
-            glfw.set_swap_interval(glfw::SwapInterval::None);
-        } else {
-            glfw.set_swap_interval(glfw::SwapInterval::Sync(1));
-        }
-
-        gl::load_with(|s| window.get_proc_address(s) as *const _);
-
-        // Pre-allocate only exactly 1 active texture ID per stream (total 3 sets of YUV = 9 textures!)
-        let (tex_left_y, tex_left_u, tex_left_v) = create_empty_yuv_textures();
-        let (tex_ref_y, tex_ref_u, tex_ref_v) = create_empty_yuv_textures();
-        let (tex_right_y, tex_right_u, tex_right_v) = create_empty_yuv_textures();
-
-        // 0.0s startup latency! We spawn FFmpeg streams right before the presentation loop starts.
         let t_load_start = Instant::now();
 
-        let mut child_left = spawn_ffmpeg_cmd(&trial.left_vid.path);
-        let mut child_ref = spawn_ffmpeg_cmd(&trial.ref_vid.path);
-        let mut child_right = spawn_ffmpeg_cmd(&trial.right_vid.path);
+        let mut child_left: Option<Child> = None;
+        let mut child_ref: Option<Child> = None;
+        let mut child_right: Option<Child> = None;
 
-        let mut out_left = child_left.stdout.take().unwrap();
-        let mut out_ref = child_ref.stdout.take().unwrap();
-        let mut out_right = child_right.stdout.take().unwrap();
+        let mut rx_left = None;
+        let mut rx_ref = None;
+        let mut rx_right = None;
 
-        let t_total_load = t_load_start.elapsed().as_secs_f64();
+        let mut recycle_left = None;
+        let mut recycle_ref = None;
+        let mut recycle_right = None;
+
+        if idx > 0 {
+            child_left = Some(spawn_ffmpeg_cmd(&trial.left_vid.path));
+            child_ref = Some(spawn_ffmpeg_cmd(&trial.ref_vid.path));
+            child_right = Some(spawn_ffmpeg_cmd(&trial.right_vid.path));
+
+            let decoded_left = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let decoded_ref = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let decoded_right = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+            macro_rules! make_stream {
+                ($child:expr, $counter:expr) => {{
+                    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PRELOAD_LIMIT + 3);
+                    let (recycle_tx, recycle_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PRELOAD_LIMIT + 3);
+                    for _ in 0..(PRELOAD_LIMIT + 3) {
+                        recycle_tx.send(vec![0u8; FRAME_SIZE]).ok();
+                    }
+                    let mut out = $child.as_mut().unwrap().stdout.take().unwrap();
+                    let counter_clone = std::sync::Arc::clone(&$counter);
+                    std::thread::spawn(move || {
+                        while let Ok(mut buf) = recycle_rx.recv() {
+                            if out.read_exact(&mut buf).is_err() {
+                                break;
+                            }
+                            if ready_tx.send(buf).is_err() {
+                                break;
+                            }
+                            counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    });
+                    (ready_rx, recycle_tx)
+                }};
+            }
+
+            let (rl, recl) = make_stream!(child_left, decoded_left);
+            let (rr, recr) = make_stream!(child_ref, decoded_ref);
+            let (rrr, recrr) = make_stream!(child_right, decoded_right);
+
+            rx_left = Some(rl);
+            rx_ref = Some(rr);
+            rx_right = Some(rrr);
+
+            recycle_left = Some(recl);
+            recycle_ref = Some(recr);
+            recycle_right = Some(recrr);
+
+            while decoded_left.load(std::sync::atomic::Ordering::SeqCst) < PRELOAD_LIMIT
+                || decoded_ref.load(std::sync::atomic::Ordering::SeqCst) < PRELOAD_LIMIT
+                || decoded_right.load(std::sync::atomic::Ordering::SeqCst) < PRELOAD_LIMIT
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+
+        let t_total_load = if idx == 0 {
+            t_pre_done
+        } else {
+            t_load_start.elapsed().as_secs_f64()
+        };
         load_times.push(t_total_load);
 
-        let shader = YuvQuadShader::new();
-
         let mut step = 0usize;
-        let mut frame_buf = vec![0u8; FRAME_SIZE];
         let t_start_presentation = Instant::now();
 
-        // Active presentation loop decoding and uploading on-the-fly
+        // Active presentation loop — zero-allocation hot path
         while !window.should_close() && step < 1200 {
             glfw.poll_events();
             for (_, event) in glfw::flush_messages(&events) {
@@ -620,27 +893,47 @@ fn main() {
                 }
             }
 
-            // Read and upload next frame in real time
-            let mut success = true;
-            if out_left.read_exact(&mut frame_buf).is_ok() {
-                unsafe { upload_yuv_frame_subimage(tex_left_y, tex_left_u, tex_left_v, &frame_buf); }
+            let mut buf_left = None;
+            let mut buf_ref = None;
+            let mut buf_right = None;
+
+            let frame_left: &[u8] = if idx == 0 {
+                let offset = step * FRAME_SIZE;
+                if offset + FRAME_SIZE > preloaded_left.len() { break; }
+                &preloaded_left[offset .. offset + FRAME_SIZE]
             } else {
-                success = false;
-            }
-            if out_ref.read_exact(&mut frame_buf).is_ok() {
-                unsafe { upload_yuv_frame_subimage(tex_ref_y, tex_ref_u, tex_ref_v, &frame_buf); }
+                buf_left = Some(match rx_left.as_ref().unwrap().recv() { Ok(f) => f, Err(_) => break });
+                buf_left.as_ref().unwrap()
+            };
+
+            let frame_ref: &[u8] = if idx == 0 {
+                let offset = step * FRAME_SIZE;
+                if offset + FRAME_SIZE > preloaded_ref.len() { break; }
+                &preloaded_ref[offset .. offset + FRAME_SIZE]
             } else {
-                success = false;
-            }
-            if out_right.read_exact(&mut frame_buf).is_ok() {
-                unsafe { upload_yuv_frame_subimage(tex_right_y, tex_right_u, tex_right_v, &frame_buf); }
+                buf_ref = Some(match rx_ref.as_ref().unwrap().recv() { Ok(f) => f, Err(_) => break });
+                buf_ref.as_ref().unwrap()
+            };
+
+            let frame_right: &[u8] = if idx == 0 {
+                let offset = step * FRAME_SIZE;
+                if offset + FRAME_SIZE > preloaded_right.len() { break; }
+                &preloaded_right[offset .. offset + FRAME_SIZE]
             } else {
-                success = false;
+                buf_right = Some(match rx_right.as_ref().unwrap().recv() { Ok(f) => f, Err(_) => break });
+                buf_right.as_ref().unwrap()
+            };
+
+            unsafe {
+                upload_yuv_frame_subimage(tex_left_y, tex_left_u, tex_left_v, frame_left);
+                upload_yuv_frame_subimage(tex_ref_y, tex_ref_u, tex_ref_v, frame_ref);
+                upload_yuv_frame_subimage(tex_right_y, tex_right_u, tex_right_v, frame_right);
             }
 
-            if !success {
-                // Video ended prematurely
-                break;
+            if idx > 0 {
+                recycle_left.as_ref().unwrap().send(buf_left.unwrap()).ok();
+                recycle_ref.as_ref().unwrap().send(buf_ref.unwrap()).ok();
+                recycle_right.as_ref().unwrap().send(buf_right.unwrap()).ok();
             }
 
             render_pyramid_quads(
@@ -674,23 +967,13 @@ fn main() {
         fps_results.push(actual_fps);
 
         // Terminate active decoders
-        let _ = child_left.kill();
-        let _ = child_ref.kill();
-        let _ = child_right.kill();
-
-        unsafe {
-            gl::DeleteTextures(1, &tex_left_y);
-            gl::DeleteTextures(1, &tex_left_u);
-            gl::DeleteTextures(1, &tex_left_v);
-            gl::DeleteTextures(1, &tex_ref_y);
-            gl::DeleteTextures(1, &tex_ref_u);
-            gl::DeleteTextures(1, &tex_ref_v);
-            gl::DeleteTextures(1, &tex_right_y);
-            gl::DeleteTextures(1, &tex_right_u);
-            gl::DeleteTextures(1, &tex_right_v);
+        if idx > 0 {
+            let _ = child_left.as_mut().unwrap().kill();
+            let _ = child_ref.as_mut().unwrap().kill();
+            let _ = child_right.as_mut().unwrap().kill();
         }
 
-        drop(window);
+        // Textures and window persist across trials
 
         let res = ExperimentResult {
             subject_id: "BENCHMARK_RUST_ONTHEFLY".to_string(),
@@ -721,6 +1004,20 @@ fn main() {
 
         println!(" Startup Time: {:.4}s | Playback FPS: {:.2}", t_total_load, actual_fps);
     }
+
+    // Explicitly delete persistent textures and window context at exit
+    unsafe {
+        gl::DeleteTextures(1, &tex_left_y);
+        gl::DeleteTextures(1, &tex_left_u);
+        gl::DeleteTextures(1, &tex_left_v);
+        gl::DeleteTextures(1, &tex_ref_y);
+        gl::DeleteTextures(1, &tex_ref_u);
+        gl::DeleteTextures(1, &tex_ref_v);
+        gl::DeleteTextures(1, &tex_right_y);
+        gl::DeleteTextures(1, &tex_right_u);
+        gl::DeleteTextures(1, &tex_right_v);
+    }
+    drop(window);
 
     fs::create_dir_all("experiment_results").unwrap();
     let csv_out_path = "experiment_results/benchmark_rust_onthefly.csv";

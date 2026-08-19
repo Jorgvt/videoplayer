@@ -7,7 +7,7 @@ from https://github.com/gfxdisp/asap with the hardware-accelerated 240Hz Rust Py
 
 Default Mode: GLOBAL / INTER-SCENE (--mode=global)
 - Pools conditions across scenes to construct a unified Global JND Quality Scale.
-- Evaluates Expected Information Gain across all 2,484 valid candidate pairs in
+- Evaluates Expected Information Gain across all 3,159 valid candidate pairs in
   all_trials_bank.csv (ensuring Vid1, Vid2, and Ref ALWAYS belong to the same scene).
 - Instant Fast EIG Selection (1ms execution time) eliminates inter-trial delay.
 - Pure CPU active sampling (NumPy + SciPy) ensures 100% of GPU VRAM and CUDA engines
@@ -23,6 +23,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+from platform_utils import get_dataset_dir, set_native_lib_env
 
 import numpy as np
 
@@ -41,7 +43,7 @@ except ImportError:
 
 def discover_conditions_and_pairs(dataset_dir: Path, bank_path: Path, target_scene: str = None):
     """
-    Scans dataset and all_trials_bank.csv (2,484 candidate pairs) to discover valid video conditions and candidate pairs.
+    Scans dataset and all_trials_bank.csv (3,159 candidate pairs) to discover valid video conditions and candidate pairs.
     Ensures that every candidate pair consists of Vid1 and Vid2 from the SAME scene.
     """
     scenes = ["attic", "bistro_exterior", "bistro_interior", "classroom", 
@@ -119,14 +121,15 @@ def run_single_rust_trial(subject_id: str, trial_num: int, scene: str, ref_path:
     if temp_res.exists():
         temp_res.unlink()
 
-    rust_bin = Path("rust_player/target/release/asap_trial")
+    exe_suffix = ".exe" if sys.platform == "win32" else ""
+    rust_bin = Path(f"rust_player/target/release/asap_trial{exe_suffix}")
     if not rust_bin.exists():
-        rust_bin = Path("rust_player/target/debug/asap_trial")
+        rust_bin = Path(f"rust_player/target/debug/asap_trial{exe_suffix}")
 
     if not rust_bin.exists():
         print("Building asap_trial binary...", flush=True)
         subprocess.run(["cargo", "build", "--release", "--bin", "asap_trial"], cwd="rust_player", check=True)
-        rust_bin = Path("rust_player/target/release/asap_trial")
+        rust_bin = Path(f"rust_player/target/release/asap_trial{exe_suffix}")
 
     cmd = [
         str(rust_bin.resolve()),
@@ -143,7 +146,7 @@ def run_single_rust_trial(subject_id: str, trial_num: int, scene: str, ref_path:
         cmd.append("--borderless")
 
     env = os.environ.copy()
-    env["LD_LIBRARY_PATH"] = "rust_player/lib/usr/lib/x86_64-linux-gnu:" + env.get("LD_LIBRARY_PATH", "")
+    set_native_lib_env(env)  # sets LD_LIBRARY_PATH on Linux, PATH on Windows
 
     proc = subprocess.run(cmd, cwd=".", env=env, capture_output=True, text=True)
 
@@ -204,7 +207,7 @@ def main():
     parser.add_argument("--no-pacer", action="store_false", dest="pacer", help="Disable 240Hz software frame pacer")
     parser.add_argument("--no-vsync", "--uncapped", action="store_true", help="Disable VSync for uncapped maximum presentation throughput")
     parser.add_argument("--borderless", action="store_true", help="Enable borderless windowed mode")
-    parser.add_argument("--dataset", type=str, default="/home/jv495/Datasets/GAIM240", help="Path to GAIM240 dataset")
+    parser.add_argument("--dataset", type=str, default=str(get_dataset_dir()), help="Path to GAIM240 dataset")
     parser.add_argument("--bank", type=str, default="all_trials_bank.csv", help="Path to master trials bank CSV")
     args = parser.parse_args()
 
@@ -315,7 +318,7 @@ def main():
         print(f"  Scene : {display_scene.upper()}", flush=True)
         print(f"  Left  : {left_cond['name']}", flush=True)
         print(f"  Right : {right_cond['name']}", flush=True)
-        print("  [Presenting 240Hz Pyramid Window - Waiting for participant response (A/D or ←/→)]...", flush=True)
+        print("  [Presenting 240Hz Pyramid Window - Waiting for participant response (A/D or Left/Right Arrow)]...", flush=True)
 
         # Launch dedicated asap_trial 240Hz Rust Player
         choice, resp_time, fps = run_single_rust_trial(

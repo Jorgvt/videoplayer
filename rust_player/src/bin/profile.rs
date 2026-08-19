@@ -24,16 +24,39 @@ struct VideoStreamData {
 }
 
 fn get_dataset_dir() -> PathBuf {
-    let default_path = PathBuf::from("/home/jv495/Datasets/GAIM240");
-    if default_path.exists() {
-        default_path
-    } else {
-        PathBuf::from("GAIM240")
+    if let Ok(env_val) = std::env::var("GAIM240_DATASET_DIR") {
+        let p = PathBuf::from(env_val);
+        if p.exists() {
+            return p;
+        }
     }
+    for rel_path in &["../../Datasets/GAIM240", "../Datasets/GAIM240", "Datasets/GAIM240"] {
+        let p = PathBuf::from(rel_path);
+        if p.exists() {
+            return p;
+        }
+    }
+    for fallback in &["D:\\GAIM240", "C:\\Datasets\\GAIM240", "/home/jv495/Datasets/GAIM240", "/home/jv495/Developer/Datasets/GAIM240"] {
+        let p = PathBuf::from(fallback);
+        if p.exists() {
+            return p;
+        }
+    }
+    PathBuf::from("GAIM240")
 }
 
 fn decode_video_cmd(path: &Path) -> Arc<VideoStreamData> {
     use std::process::Command;
+    #[cfg(target_os = "windows")]
+    let ffmpeg_bin = if std::path::Path::new("rust_player/lib/windows/bin/ffmpeg.exe").exists() {
+        "rust_player/lib/windows/bin/ffmpeg.exe"
+    } else if std::path::Path::new("lib/windows/bin/ffmpeg.exe").exists() {
+        "lib/windows/bin/ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
+
+    #[cfg(not(target_os = "windows"))]
     let ffmpeg_bin = if Path::new("rust_player/lib/usr/bin/ffmpeg").exists() {
         "rust_player/lib/usr/bin/ffmpeg"
     } else if Path::new("lib/usr/bin/ffmpeg").exists() {
@@ -42,30 +65,47 @@ fn decode_video_cmd(path: &Path) -> Arc<VideoStreamData> {
         "ffmpeg"
     };
 
-    let path_str = path.to_string_lossy();
-    let output = Command::new(ffmpeg_bin)
-        .env(
-            "LD_LIBRARY_PATH",
-            "rust_player/lib/usr/lib/x86_64-linux-gnu:lib/usr/lib/x86_64-linux-gnu",
-        )
-        .args([
-            "-hwaccel",
-            "cuda",
-            "-c:v",
-            "hevc_cuvid",
-            "-i",
-            &path_str,
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "yuv420p",
-            "pipe:1",
-        ])
-        .output();
+    let mut cmd = Command::new(ffmpeg_bin);
 
-    let mut raw_data = Vec::new();
-    if let Ok(out) = output {
-        raw_data = out.stdout;
+    #[cfg(target_os = "linux")]
+    cmd.env(
+        "LD_LIBRARY_PATH",
+        "rust_player/lib/usr/lib/x86_64-linux-gnu:lib/usr/lib/x86_64-linux-gnu",
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        let dll_dir1 = "rust_player/lib/windows/bin";
+        let dll_dir2 = "lib/windows/bin";
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        cmd.env("PATH", format!("{};{};{}", dll_dir1, dll_dir2, current_path));
+    }
+
+    cmd.args([
+        "-hwaccel",
+        "cuda",
+        "-c:v",
+        "hevc_cuvid",
+        "-i",
+        &path.to_string_lossy(),
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "yuv420p",
+        "pipe:1",
+    ]);
+
+    let mut raw_data = Vec::with_capacity(1200 * FRAME_SIZE);
+
+    if let Ok(mut child) = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        if let Some(mut stdout) = child.stdout.take() {
+            std::io::copy(&mut stdout, &mut raw_data).ok();
+        }
+        child.wait().ok();
     }
 
     let num_frames = raw_data.len() / FRAME_SIZE;

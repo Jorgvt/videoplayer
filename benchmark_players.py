@@ -7,15 +7,21 @@ import queue
 import threading
 from pathlib import Path
 
+from platform_utils import get_dataset_dir, set_native_lib_env, set_native_bin_env
+
 # Paths to the video players
-RUST_BIN = Path("rust_player/target/release/asap_trial").resolve()
+exe_suffix = ".exe" if sys.platform == "win32" else ""
+RUST_BIN = Path(f"rust_player/target/release/asap_trial{exe_suffix}").resolve()
 NVIS_BIN = Path("../userstudy_v0.2_linux/userstudy_v0.2/userstudy_patched").resolve()
 
-DATASET_DIR = Path("/home/jv495/Datasets/GAIM240").resolve()
+DATASET_DIR = get_dataset_dir()
 SCENES = ["attic", "bistro_exterior", "bistro_interior", "classroom", "landscape", "marbles", "pink_room", "subway", "zeroday"]
 
 def get_descendants(parent_pid):
+    """Walk /proc to find child PIDs. Linux-only; returns [] on Windows."""
     descendants = []
+    if sys.platform == "win32":
+        return descendants
     try:
         pids = [int(x) for x in os.listdir("/proc") if x.isdigit()]
         for pid in pids:
@@ -38,6 +44,9 @@ def get_descendants(parent_pid):
     return list(set(all_descendants))
 
 def get_tree_memory_kb(parent_pid):
+    """Read memory from /proc. Linux-only; returns (0, 0) on Windows."""
+    if sys.platform == "win32":
+        return 0, 0
     pids = [parent_pid] + get_descendants(parent_pid)
     total_rss = 0
     total_vmsize = 0
@@ -54,12 +63,18 @@ def get_tree_memory_kb(parent_pid):
     return total_rss, total_vmsize
 
 def kill_process_tree(parent_pid):
-    pids = get_descendants(parent_pid) + [parent_pid]
-    for pid in pids:
+    if sys.platform == "win32":
         try:
-            subprocess.run(["kill", "-9", str(pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(parent_pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
             pass
+    else:
+        pids = get_descendants(parent_pid) + [parent_pid]
+        for pid in pids:
+            try:
+                subprocess.run(["kill", "-9", str(pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
 
 def enqueue_output(out, q):
     try:
@@ -99,7 +114,7 @@ def benchmark_scene(scene):
         ]
         
         env = os.environ.copy()
-        env["LD_LIBRARY_PATH"] = str(Path(__file__).parent / "rust_player" / "lib" / "usr" / "lib" / "x86_64-linux-gnu") + ":" + env.get("LD_LIBRARY_PATH", "")
+        set_native_lib_env(env)  # sets LD_LIBRARY_PATH on Linux, PATH on Windows
 
         t0 = time.time()
         rust_proc = subprocess.Popen(rust_cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -160,8 +175,10 @@ def benchmark_scene(scene):
     nvis_vms = 0
     
     if NVIS_BIN.exists():
-        nvis_cmd = [
-            "stdbuf", "-oL", "-eL",
+        nvis_cmd = []
+        if sys.platform != "win32":
+            nvis_cmd += ["stdbuf", "-oL", "-eL"]
+        nvis_cmd += [
             str(NVIS_BIN),
             "-f", left_video,
             "-f", ref_video,
@@ -169,8 +186,8 @@ def benchmark_scene(scene):
         ]
         
         env = os.environ.copy()
-        env["PATH"] = str(Path(__file__).parent / "rust_player" / "lib" / "usr" / "bin") + ":" + env.get("PATH", "")
-        env["LD_LIBRARY_PATH"] = str(Path(__file__).parent / "rust_player" / "lib" / "usr" / "lib" / "x86_64-linux-gnu") + ":" + env.get("LD_LIBRARY_PATH", "")
+        set_native_bin_env(env)   # prepends bundled bin dir to PATH (cross-platform)
+        set_native_lib_env(env)   # sets LD_LIBRARY_PATH on Linux, PATH on Windows
 
         t0 = time.time()
         nvis_proc = subprocess.Popen(nvis_cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)

@@ -12,15 +12,49 @@ type AVPacketPtr = *mut c_void;
 type AVFramePtr = *mut c_void;
 
 fn main() {
-    let test_file = "/home/jv495/Datasets/GAIM240/zeroday_restir_level2.mp4";
+    // Default test file — override via GAIM240_TEST_FILE env var or edit this line.
+    let test_file = std::env::var("GAIM240_TEST_FILE")
+        .unwrap_or_else(|_| "/home/jv495/Datasets/GAIM240/zeroday_restir_level2.mp4".to_string());
+
     println!("=== Testing Direct In-Process libavcodec Decoding in Rust ===");
     println!("File: {}\n", test_file);
 
     unsafe {
-        let libavformat = Library::new("/usr/lib/x86_64-linux-gnu/libavformat.so.60")
-            .expect("Failed to load libavformat.so.60");
-        let libavcodec = Library::new("/usr/lib/x86_64-linux-gnu/libavcodec.so.60")
-            .expect("Failed to load libavcodec.so.60");
+        // Load libavformat and libavcodec dynamically.
+        // On Linux:   .so files from the system or bundled in lib/usr/lib/x86_64-linux-gnu/
+        // On Windows: .dll files expected in PATH or lib/windows/bin/
+        #[cfg(target_os = "linux")]
+        let (libavformat, libavcodec) = {
+            // Try bundled copy first, then fall back to system.
+            let fmt_path = if std::path::Path::new("rust_player/lib/usr/lib/x86_64-linux-gnu/libavformat.so.60").exists() {
+                "rust_player/lib/usr/lib/x86_64-linux-gnu/libavformat.so.60"
+            } else {
+                "/usr/lib/x86_64-linux-gnu/libavformat.so.60"
+            };
+            let codec_path = if std::path::Path::new("rust_player/lib/usr/lib/x86_64-linux-gnu/libavcodec.so.60").exists() {
+                "rust_player/lib/usr/lib/x86_64-linux-gnu/libavcodec.so.60"
+            } else {
+                "/usr/lib/x86_64-linux-gnu/libavcodec.so.60"
+            };
+            (
+                Library::new(fmt_path).expect("Failed to load libavformat.so.60"),
+                Library::new(codec_path).expect("Failed to load libavcodec.so.60"),
+            )
+        };
+
+        #[cfg(target_os = "windows")]
+        let (libavformat, libavcodec) = {
+            // On Windows, DLLs are resolved via PATH. Place avformat-60.dll / avcodec-60.dll
+            // in rust_player/lib/windows/bin/ and add that dir to PATH before running.
+            (
+                Library::new("avformat-60.dll").expect("Failed to load avformat-60.dll"),
+                Library::new("avcodec-60.dll").expect("Failed to load avcodec-60.dll"),
+            )
+        };
+
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        compile_error!("libav_decode.rs only supports Linux and Windows targets.");
+
 
         // Load symbols
         let avformat_open_input: libloading::Symbol<

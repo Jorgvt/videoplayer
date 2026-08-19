@@ -133,6 +133,17 @@ struct ExperimentResult {
 
 fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
     use std::process::Command;
+
+    #[cfg(target_os = "windows")]
+    let ffmpeg_bin = if std::path::Path::new("rust_player/lib/windows/bin/ffmpeg.exe").exists() {
+        "rust_player/lib/windows/bin/ffmpeg.exe"
+    } else if std::path::Path::new("lib/windows/bin/ffmpeg.exe").exists() {
+        "lib/windows/bin/ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
+
+    #[cfg(not(target_os = "windows"))]
     let ffmpeg_bin = if Path::new("rust_player/lib/usr/bin/ffmpeg").exists() {
         "rust_player/lib/usr/bin/ffmpeg"
     } else if Path::new("lib/usr/bin/ffmpeg").exists() {
@@ -141,12 +152,61 @@ fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
         "ffmpeg"
     };
 
-    let output = Command::new(ffmpeg_bin)
-        .env(
-            "LD_LIBRARY_PATH",
-            "rust_player/lib/usr/lib/x86_64-linux-gnu:lib/usr/lib/x86_64-linux-gnu",
-        )
-        .args([
+    let mut cmd = Command::new(ffmpeg_bin);
+
+    #[cfg(target_os = "linux")]
+    cmd.env(
+        "LD_LIBRARY_PATH",
+        "rust_player/lib/usr/lib/x86_64-linux-gnu:lib/usr/lib/x86_64-linux-gnu",
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        let dll_dir1 = "rust_player/lib/windows/bin";
+        let dll_dir2 = "lib/windows/bin";
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        cmd.env("PATH", format!("{};{};{}", dll_dir1, dll_dir2, current_path));
+    }
+
+    let mut raw_data = Vec::with_capacity(1200 * FRAME_SIZE);
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::net::TcpListener;
+        use std::process::Stdio;
+        use std::os::windows::process::CommandExt;
+
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x00004000;
+        cmd.creation_flags(BELOW_NORMAL_PRIORITY_CLASS);
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind TCP listener");
+        let port = listener.local_addr().unwrap().port();
+
+        cmd.args([
+            "-hwaccel",
+            "cuda",
+            "-c:v",
+            "hevc_cuvid",
+            "-i",
+            &path,
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv420p",
+            &format!("tcp://127.0.0.1:{}", port),
+        ]);
+
+        if let Ok(mut child) = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+            if let Ok((mut stream, _)) = listener.accept() {
+                std::io::copy(&mut stream, &mut raw_data).ok();
+            }
+            child.wait().ok();
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        cmd.args([
             "-hwaccel",
             "cuda",
             "-c:v",
@@ -158,12 +218,18 @@ fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
             "-pix_fmt",
             "yuv420p",
             "pipe:1",
-        ])
-        .output();
+        ]);
 
-    let mut raw_data = Vec::new();
-    if let Ok(out) = output {
-        raw_data = out.stdout;
+        if let Ok(mut child) = cmd
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            if let Some(mut stdout) = child.stdout.take() {
+                std::io::copy(&mut stdout, &mut raw_data).ok();
+            }
+            child.wait().ok();
+        }
     }
 
     let num_frames = raw_data.len() / FRAME_SIZE;
@@ -468,6 +534,28 @@ fn render_pyramid_subimage(
     }
 }
 
+fn get_dataset_dir() -> std::path::PathBuf {
+    if let Ok(env_val) = std::env::var("GAIM240_DATASET_DIR") {
+        let p = std::path::PathBuf::from(env_val);
+        if p.exists() {
+            return p;
+        }
+    }
+    for rel_path in &["../../Datasets/GAIM240", "../Datasets/GAIM240", "Datasets/GAIM240"] {
+        let p = std::path::PathBuf::from(rel_path);
+        if p.exists() {
+            return p;
+        }
+    }
+    for fallback in &["D:\\GAIM240", "C:\\Datasets\\GAIM240", "/home/jv495/Datasets/GAIM240", "/home/jv495/Developer/Datasets/GAIM240"] {
+        let p = std::path::PathBuf::from(fallback);
+        if p.exists() {
+            return p;
+        }
+    }
+    std::path::PathBuf::from("GAIM240")
+}
+
 fn hash_subject(subject_id: &str) -> u64 {
     let mut s = std::collections::hash_map::DefaultHasher::new();
     subject_id.hash(&mut s);
@@ -526,19 +614,24 @@ fn main() {
     for (i, row) in shuffled_master.iter().enumerate() {
         let flip: bool = rand::Rng::gen(&mut rng);
 
+        let dataset_dir = get_dataset_dir();
+        let left_vid_path = dataset_dir.join(if flip { &row.vid2_filename } else { &row.vid1_filename }).to_string_lossy().to_string();
+        let right_vid_path = dataset_dir.join(if flip { &row.vid1_filename } else { &row.vid2_filename }).to_string_lossy().to_string();
+        let ref_vid_path = dataset_dir.join(&row.ref_filename).to_string_lossy().to_string();
+
         let left_vid = if flip {
             VideoInfo {
                 filename: row.vid2_filename.clone(),
                 metric: row.vid2_metric.clone(),
                 level: row.vid2_level.clone(),
-                path: row.vid2_path.clone(),
+                path: left_vid_path,
             }
         } else {
             VideoInfo {
                 filename: row.vid1_filename.clone(),
                 metric: row.vid1_metric.clone(),
                 level: row.vid1_level.clone(),
-                path: row.vid1_path.clone(),
+                path: left_vid_path,
             }
         };
 
@@ -547,14 +640,14 @@ fn main() {
                 filename: row.vid1_filename.clone(),
                 metric: row.vid1_metric.clone(),
                 level: row.vid1_level.clone(),
-                path: row.vid1_path.clone(),
+                path: right_vid_path,
             }
         } else {
             VideoInfo {
                 filename: row.vid2_filename.clone(),
                 metric: row.vid2_metric.clone(),
                 level: row.vid2_level.clone(),
-                path: row.vid2_path.clone(),
+                path: right_vid_path,
             }
         };
 
@@ -562,7 +655,7 @@ fn main() {
             filename: row.ref_filename.clone(),
             metric: "reference".to_string(),
             level: "ref".to_string(),
-            path: row.ref_path.clone(),
+            path: ref_vid_path,
         };
 
         prepared_trials.push(PreparedTrial {
@@ -608,6 +701,10 @@ fn main() {
     let mut load_times: Vec<f64> = Vec::new();
     let mut bench_csv_results: Vec<ExperimentResult> = Vec::new();
 
+    // Prefetch and pre-decode the first trial in the background.
+    let first_trial = active_trials[0].clone();
+    let mut next_tf_handle = Some(thread::spawn(move || decode_trial_parallel(&first_trial)));
+
     for (idx, trial) in active_trials.iter().enumerate() {
         use std::io::Write;
         print!(
@@ -620,9 +717,15 @@ fn main() {
         std::io::stdout().flush().unwrap();
 
         let t0 = Instant::now();
-        let tf = decode_trial_parallel(trial);
+        let tf = next_tf_handle.take().unwrap().join().unwrap();
         let t_load = t0.elapsed().as_secs_f64();
         load_times.push(t_load);
+
+        // Spawn background pre-decoding for the next trial
+        if idx + 1 < active_trials.len() {
+            let next_trial = active_trials[idx + 1].clone();
+            next_tf_handle = Some(thread::spawn(move || decode_trial_parallel(&next_trial)));
+        }
 
         if tf.left_stream.num_frames == 0
             || tf.ref_stream.num_frames == 0
