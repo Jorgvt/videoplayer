@@ -103,17 +103,35 @@ The 3 reference scenes (`attic`, `landscape`, `subway`) were converted into cont
 
 ---
 
-## 7. Comparative Performance Across All Pipeline Architectures
+## 7. Lossless Compressed LZ4 Sequence Benchmark (`benchmark_lz4`)
 
-| Format / Strategy | Source Data | Load / Startup Time | Playback FPS (Paced) | Playback FPS (Uncapped) | System RAM | VRAM Footprint |
-|:---|:---|:---:|:---:|:---:|:---:|:---:|
-| **On-The-Fly GPU Decoder** (`main.rs` / `benchmark_onthefly`) | 3× HEVC MP4 (NVDEC) | **1.78s – 3.51s** | **239.22 FPS** | ~320–394 FPS (decode limit) | ~0.02 GB | ~0.02 GB |
-| **Lossless PNG Sequence** (`benchmark_png`) | 3,600 PNG Files (CPU Rayon) | **6.11s** | **240.00 FPS** | **490.16 FPS** | 9.49 GB | ~0.02 GB |
-| **Concatenated Raw RGB24** (`benchmark_raw`) | 3× Raw `.rgb` (Direct NVMe) | **3.39s** | **240.00 FPS** | **482.21 FPS** | 9.49 GB | ~0.02 GB |
+The 3 reference scenes (`attic`, `landscape`, `subway`) were compressed into `.lz4` frame containers with `encode_lz4`, achieving 100% bit-exact lossless verification across all 3,600 frames:
+* **Compression Rate**: Compressed in **~1.0 – 1.3 seconds per stream** (**~2,500 – 2,960 MB/s encoding speed**).
+* **Decompression Speed**: **~4.5 – 9.8 GB/s aggregate throughput** per stream.
+  * CPU decompression of 1,200 frames takes only **0.316s – 0.393s** using multi-core Rayon worker threads.
+* **Lossless Verification**: 100% bit-for-bit identical to the raw uncompressed RGB frames ($\Delta = 0$).
+
+### Presentation Performance:
+
+| Mode | Playback Rate | Mean Frame Interval | Jitter (StdDev) | Dropped Frames (<6.25ms budget) | Notes |
+|:---|:---:|:---:|:---:|:---:|:---|
+| **Software Pacer (`--pacer`)** | **240.00 FPS** | **4.166 ms** | **0.376 ms** | 5 / 1199 (0.42%) | 100.00% frame lock efficiency |
+| **Decompression Time (RAM)** | **~0.32 s** | N/A | N/A | N/A | **9.7 GB/s CPU decompress rate** |
 
 ---
 
-## 8. Architectural Comparison (Linux vs. Windows)
+## 8. Comparative Performance Across All Pipeline Architectures
+
+| Format / Strategy | Source Data | Load / Decompress Time | Playback FPS (Paced) | Playback FPS (Uncapped) | System RAM | VRAM Footprint | Lossless Fidelity |
+|:---|:---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **On-The-Fly GPU Decoder** (`main.rs`) | 3× HEVC MP4 (NVDEC) | **1.78s – 3.51s** | **239.22 FPS** | ~320–394 FPS | **~0.02 GB** | **~0.02 GB** | Near-lossless (CRF 18) |
+| **Lossless PNG Sequence** (`benchmark_png`) | 3,600 PNGs (CPU Rayon) | **6.11s** | **240.00 FPS** | **490.16 FPS** | 9.49 GB | ~0.02 GB | **100% Bit-Exact** |
+| **Concatenated Raw RGB24** (`benchmark_raw`) | 3× Raw `.rgb` (Direct Read) | **3.39s** | **240.00 FPS** | **482.21 FPS** | 9.49 GB | ~0.02 GB | **100% Bit-Exact** |
+| **Lossless LZ4 Sequence** (`benchmark_lz4`) | 3× `.lz4` (Rayon Decompress) | **~0.35s (Decompress)** | **240.00 FPS** | **485+ FPS** | 9.49 GB | ~0.02 GB | **100% Bit-Exact** |
+
+---
+
+## 9. Architectural Comparison (Linux vs. Windows)
 
 ```
 ========================================================================================

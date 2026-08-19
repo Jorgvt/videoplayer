@@ -13,5 +13,6 @@ libloading = "0.8"
 png = "0.17"
 rayon = "1.8"
 libc = "0.2"
+lz4_flex = "0.11"
 
 

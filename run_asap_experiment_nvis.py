@@ -43,7 +43,7 @@ except ImportError:
 
 def discover_conditions_and_pairs(dataset_dir: Path, bank_path: Path, target_scene: str = None):
     """
-    Scans dataset and all_trials_bank.csv (2,484 candidate pairs) to discover valid video conditions and candidate pairs.
+    Scans dataset and all_trials_bank.csv (3,159 candidate pairs) to discover valid video conditions and candidate pairs.
     Ensures that every candidate pair consists of Vid1 and Vid2 from the SAME scene.
     """
     scenes = ["attic", "bistro_exterior", "bistro_interior", "classroom", 

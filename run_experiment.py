@@ -70,6 +70,7 @@ def scan_dataset():
 
 def generate_master_trial_bank():
     """Scans dataset and generates all_trials_bank.csv containing all possible 2AFC pairings."""
+    import itertools
     videos = scan_dataset()
     raw_bank = []
     trial_counter = 0
@@ -83,60 +84,27 @@ def generate_master_trial_bank():
             continue
             
         non_ref = [v for v in vids if v["metric"] != "reference"]
-        metrics = list(dict.fromkeys([v["metric"] for v in non_ref]))
+        non_ref = sorted(non_ref, key=lambda x: (x["metric"], x["level"]))
         
-        # 1. INTRA-DISTORTION PAIRS (Same metric, different levels)
-        for metric in metrics:
-            metric_vids = [v for v in non_ref if v["metric"] == metric]
-            pairs = [("level0", "level1"), ("level1", "level2"), ("level0", "level2")]
-            for lvl1, lvl2 in pairs:
-                v1 = next((v for v in metric_vids if v["level"] == lvl1), None)
-                v2 = next((v for v in metric_vids if v["level"] == lvl2), None)
-                if v1 and v2:
-                    trial_counter += 1
-                    raw_bank.append({
-                        "MasterTrialID": trial_counter,
-                        "Scene": scene,
-                        "ComparisonType": "INTRA-DISTORTION",
-                        "RefFilename": ref_vid["filename"],
-                        "RefPath": ref_vid["path"],
-                        "Vid1_Filename": v1["filename"],
-                        "Vid1_Metric": v1["metric"],
-                        "Vid1_Level": v1["level"],
-                        "Vid1_Path": v1["path"],
-                        "Vid2_Filename": v2["filename"],
-                        "Vid2_Metric": v2["metric"],
-                        "Vid2_Level": v2["level"],
-                        "Vid2_Path": v2["path"]
-                    })
-                    
-        # 2. INTER-DISTORTION PAIRS (Different metrics, cross-distortion comparisons)
-        import itertools
-        metric_pairs = list(itertools.combinations(metrics, 2))
-        for m1, m2 in metric_pairs:
-            m1_vids = [v for v in non_ref if v["metric"] == m1]
-            m2_vids = [v for v in non_ref if v["metric"] == m2]
-            
-            for lvl in ["level1", "level2"]:
-                v1 = next((v for v in m1_vids if v["level"] == lvl), None)
-                v2 = next((v for v in m2_vids if v["level"] == lvl), None)
-                if v1 and v2:
-                    trial_counter += 1
-                    raw_bank.append({
-                        "MasterTrialID": trial_counter,
-                        "Scene": scene,
-                        "ComparisonType": "INTER-DISTORTION",
-                        "RefFilename": ref_vid["filename"],
-                        "RefPath": ref_vid["path"],
-                        "Vid1_Filename": v1["filename"],
-                        "Vid1_Metric": v1["metric"],
-                        "Vid1_Level": v1["level"],
-                        "Vid1_Path": v1["path"],
-                        "Vid2_Filename": v2["filename"],
-                        "Vid2_Metric": v2["metric"],
-                        "Vid2_Level": v2["level"],
-                        "Vid2_Path": v2["path"]
-                    })
+        pairs = list(itertools.combinations(non_ref, 2))
+        for v1, v2 in pairs:
+            trial_counter += 1
+            comp_type = "INTRA-DISTORTION" if v1["metric"] == v2["metric"] else "INTER-DISTORTION"
+            raw_bank.append({
+                "MasterTrialID": trial_counter,
+                "Scene": scene,
+                "ComparisonType": comp_type,
+                "RefFilename": ref_vid["filename"],
+                "RefPath": ref_vid["path"],
+                "Vid1_Filename": v1["filename"],
+                "Vid1_Metric": v1["metric"],
+                "Vid1_Level": v1["level"],
+                "Vid1_Path": v1["path"],
+                "Vid2_Filename": v2["filename"],
+                "Vid2_Metric": v2["metric"],
+                "Vid2_Level": v2["level"],
+                "Vid2_Path": v2["path"]
+            })
                     
     df_bank = pd.DataFrame(raw_bank)
     df_bank.to_csv(TRIAL_BANK_CSV, index=False)

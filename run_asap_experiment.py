@@ -7,7 +7,7 @@ from https://github.com/gfxdisp/asap with the hardware-accelerated 240Hz Rust Py
 
 Default Mode: GLOBAL / INTER-SCENE (--mode=global)
 - Pools conditions across scenes to construct a unified Global JND Quality Scale.
-- Evaluates Expected Information Gain across all 2,484 valid candidate pairs in
+- Evaluates Expected Information Gain across all 3,159 valid candidate pairs in
   all_trials_bank.csv (ensuring Vid1, Vid2, and Ref ALWAYS belong to the same scene).
 - Instant Fast EIG Selection (1ms execution time) eliminates inter-trial delay.
 - Pure CPU active sampling (NumPy + SciPy) ensures 100% of GPU VRAM and CUDA engines
@@ -43,7 +43,7 @@ except ImportError:
 
 def discover_conditions_and_pairs(dataset_dir: Path, bank_path: Path, target_scene: str = None):
     """
-    Scans dataset and all_trials_bank.csv (2,484 candidate pairs) to discover valid video conditions and candidate pairs.
+    Scans dataset and all_trials_bank.csv (3,159 candidate pairs) to discover valid video conditions and candidate pairs.
     Ensures that every candidate pair consists of Vid1 and Vid2 from the SAME scene.
     """
     scenes = ["attic", "bistro_exterior", "bistro_interior", "classroom", 
