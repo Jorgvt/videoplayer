@@ -1,2 +1,0 @@
-MasterTrialID,Scene,ComparisonType,RefFilename,RefPath,Vid1_Filename,Vid1_Metric,Vid1_Level,Vid1_Path,Vid2_Filename,Vid2_Metric,Vid2_Level,Vid2_Path
-9999,zeroday,ASAP-ACTIVE-SAMPLING,zeroday_reference.mp4,/home/jv495/Datasets/GAIM240/zeroday_reference.mp4,zeroday_motion_resolution_level1.mp4,motion_resolution,level1,/home/jv495/Datasets/GAIM240/zeroday_motion_resolution_level1.mp4,zeroday_noise_colors_level0.mp4,noise_colors,level0,/home/jv495/Datasets/GAIM240/zeroday_noise_colors_level0.mp4
