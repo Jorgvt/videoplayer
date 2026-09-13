@@ -54,20 +54,72 @@ SCENES = [
 def discover_scene_conditions(dataset_dir: Path, scene: str) -> Tuple[List[Dict], Dict[str, int]]:
     """
     Discovers all distortion conditions for a given scene in the dataset directory.
+    Supports both hierarchical (/scene/metric/level/video0.rgb or .mp4) and flat (scene_metric_level.mp4) layouts.
     Returns (conditions_list, condition_name_to_index_map).
     """
+    scene_dir = dataset_dir / scene
+
+    # 1. Check hierarchical directory layout (e.g. all_sequences_new_lossless_raw)
+    if scene_dir.is_dir():
+        ref_candidates = [
+            scene_dir / "reference" / "video0.rgb",
+            scene_dir / "reference" / "video0.mp4",
+            dataset_dir / f"{scene}_reference.mp4",
+            dataset_dir / f"{scene}_reference.rgb",
+        ]
+        ref_path = next((p for p in ref_candidates if p.exists()), None)
+        if not ref_path:
+            raise FileNotFoundError(f"Reference video missing for scene '{scene}' in {dataset_dir}")
+
+        conditions = []
+        for metric_dir in sorted(scene_dir.iterdir()):
+            if not metric_dir.is_dir() or metric_dir.name == "reference":
+                continue
+            metric = metric_dir.name
+            for lvl_dir in sorted(metric_dir.iterdir()):
+                if not lvl_dir.is_dir():
+                    continue
+                level = lvl_dir.name
+                vid_candidates = [
+                    lvl_dir / "video0.rgb",
+                    lvl_dir / "video0.mp4",
+                ]
+                vid_path = next((p for p in vid_candidates if p.exists()), None)
+                if not vid_path:
+                    continue
+
+                cond_name = f"{scene}:{metric}_{level}"
+                conditions.append({
+                    "name": cond_name,
+                    "scene": scene,
+                    "filename": f"{scene}/{metric}/{level}/{vid_path.name}",
+                    "metric": metric,
+                    "level": level,
+                    "path": str(vid_path.resolve()),
+                    "ref_path": str(ref_path.resolve()),
+                })
+
+        if conditions:
+            cond_map = {c["name"]: idx for idx, c in enumerate(conditions)}
+            return conditions, cond_map
+
+    # 2. Fallback to flat directory layout
     ref_path = dataset_dir / f"{scene}_reference.mp4"
+    if not ref_path.exists():
+        ref_path = dataset_dir / f"{scene}_reference.rgb"
     if not ref_path.exists():
         raise FileNotFoundError(f"Reference video missing for scene '{scene}': {ref_path}")
 
     prefix = f"{scene}_"
     conditions = []
-    for p in sorted(dataset_dir.glob(f"{prefix}*.mp4")):
+    for p in sorted(dataset_dir.glob(f"{prefix}*.*")):
+        if p.suffix not in [".mp4", ".rgb"]:
+            continue
         filename = p.name
-        if filename == f"{scene}_reference.mp4":
+        if filename in (f"{scene}_reference.mp4", f"{scene}_reference.rgb"):
             continue
 
-        rest = filename[len(prefix):-4]
+        rest = filename[len(prefix):-len(p.suffix)]
         if "_level" in rest:
             metric, level = rest.rsplit("_level", 1)
             level = f"level{level}"
@@ -273,7 +325,7 @@ def generate_batch(
             trials_for_scene.append({
                 "SubjectID": subject_id,
                 "Scene": scene,
-                "RefFilename": f"{scene}_reference.mp4",
+                "RefFilename": Path(cond_a["ref_path"]).name,
                 "RefPath": cond_a["ref_path"],
                 "LeftCondition": left_cond["name"],
                 "LeftFilename": left_cond["filename"],

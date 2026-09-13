@@ -17,9 +17,11 @@ fn get_raw_dataset_dir() -> PathBuf {
         }
     }
     for fallback in &[
+        "/mnt/wdblack2tb/all_sequences_new_lossless_raw",
         "/home/jv495/Downloads/GAIM240_refs_raw",
         "../GAIM240_refs_raw",
         "../../Downloads/GAIM240_refs_raw",
+        "D:\\all_sequences_new_lossless_raw",
         "D:\\GAIM240_refs_raw",
         "C:\\GAIM240_refs_raw",
     ] {
@@ -28,7 +30,7 @@ fn get_raw_dataset_dir() -> PathBuf {
             return p;
         }
     }
-    PathBuf::from("GAIM240_refs_raw")
+    PathBuf::from("/mnt/wdblack2tb/all_sequences_new_lossless_raw")
 }
 
 fn create_empty_rgb_texture() -> u32 {

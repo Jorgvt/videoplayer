@@ -689,19 +689,23 @@ fn get_dataset_dir() -> std::path::PathBuf {
             return p;
         }
     }
-    for rel_path in &["../../Datasets/GAIM240", "../Datasets/GAIM240", "Datasets/GAIM240"] {
-        let p = std::path::PathBuf::from(rel_path);
-        if p.exists() {
-            return p;
-        }
-    }
-    for fallback in &["D:\\GAIM240", "C:\\Datasets\\GAIM240", "/home/jv495/Datasets/GAIM240", "/home/jv495/Developer/Datasets/GAIM240"] {
+    for fallback in &[
+        "/mnt/wdblack2tb/all_sequences_new_lossless_raw",
+        "D:\\all_sequences_new_lossless_raw",
+        "../../Datasets/GAIM240",
+        "../Datasets/GAIM240",
+        "Datasets/GAIM240",
+        "D:\\GAIM240",
+        "C:\\Datasets\\GAIM240",
+        "/home/jv495/Datasets/GAIM240",
+        "/home/jv495/Developer/Datasets/GAIM240",
+    ] {
         let p = std::path::PathBuf::from(fallback);
         if p.exists() {
             return p;
         }
     }
-    std::path::PathBuf::from("GAIM240")
+    std::path::PathBuf::from("/mnt/wdblack2tb/all_sequences_new_lossless_raw")
 }
 
 fn hash_subject(subject_id: &str) -> u64 {

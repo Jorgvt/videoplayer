@@ -44,14 +44,20 @@ def get_dataset_dir() -> Path:
             return p
         print(f"[platform_utils] WARNING: GAIM240_DATASET_DIR={env_val!r} does not exist. Falling back.")
 
-    # 2. Relative sibling path (works on any machine with the standard layout)
+    # 2. Linux primary dataset path on external storage
+    primary_linux = Path("/mnt/wdblack2tb/all_sequences_new_lossless_raw")
+    if primary_linux.exists():
+        return primary_linux
+
+    # 3. Relative sibling path (works on any machine with the standard layout)
     candidate = (_WORKSPACE_ROOT / ".." / ".." / "Datasets" / "GAIM240").resolve()
     if candidate.exists():
         return candidate
 
-    # 3. Platform-specific absolute fallbacks
+    # 4. Platform-specific absolute fallbacks
     if IS_WINDOWS:
         fallbacks = [
+            Path(r"D:\all_sequences_new_lossless_raw"),
             Path(r"C:\Datasets\GAIM240"),
             Path(r"D:\Datasets\GAIM240"),
             Path(r"D:\GAIM240"),
@@ -66,8 +72,8 @@ def get_dataset_dir() -> Path:
         if fb.exists():
             return fb.resolve()
 
-    # Return the relative candidate anyway so callers get a meaningful error
-    return candidate
+    # Return primary Linux if on Linux, otherwise candidate
+    return primary_linux if IS_LINUX else candidate
 
 
 # ---------------------------------------------------------------------------
