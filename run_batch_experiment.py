@@ -33,7 +33,8 @@ def run_single_presentation_trial(
     right_path: str,
     pacer: bool = True,
     no_vsync: bool = False,
-    borderless: bool = False
+    borderless: bool = False,
+    feedback_ms: int = 300
 ):
     """
     Executes a single 2AFC presentation trial using the dedicated asap_trial Rust 240Hz player.
@@ -59,7 +60,8 @@ def run_single_presentation_trial(
         f"--left={left_path}",
         f"--ref={ref_path}",
         f"--right={right_path}",
-        f"--out={temp_res.resolve()}"
+        f"--out={temp_res.resolve()}",
+        f"--feedback-ms={feedback_ms}"
     ]
     if pacer:
         cmd.append("--pacer")
@@ -95,7 +97,8 @@ def run_batch_session(
     dataset_dir: Path = None,
     pacer: bool = True,
     no_vsync: bool = False,
-    borderless: bool = False
+    borderless: bool = False,
+    feedback_ms: int = 300
 ):
     if dataset_dir is None:
         dataset_dir = get_dataset_dir()
@@ -182,7 +185,8 @@ def run_batch_session(
             right_path=right_path,
             pacer=pacer,
             no_vsync=no_vsync,
-            borderless=borderless
+            borderless=borderless,
+            feedback_ms=feedback_ms
         )
 
         if choice is None:
@@ -235,6 +239,7 @@ def main():
     parser.add_argument("--no-pacer", action="store_false", dest="pacer", help="Disable 240Hz software frame pacer")
     parser.add_argument("--no-vsync", "--uncapped", action="store_true", help="Disable VSync for uncapped maximum presentation throughput")
     parser.add_argument("--borderless", action="store_true", help="Enable borderless windowed mode")
+    parser.add_argument("--feedback-ms", type=int, default=300, help="Visual feedback duration in ms (default: 300 ms green border)")
     parser.add_argument("--dataset", type=str, default=str(get_dataset_dir()), help="Path to GAIM240 dataset")
     args = parser.parse_args()
 
@@ -245,7 +250,8 @@ def main():
         dataset_dir=Path(args.dataset),
         pacer=args.pacer,
         no_vsync=args.no_vsync,
-        borderless=args.borderless
+        borderless=args.borderless,
+        feedback_ms=args.feedback_ms
     )
 
 

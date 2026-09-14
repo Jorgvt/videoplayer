@@ -56,6 +56,7 @@ Examples:
     parser.add_argument("--no-pacer", action="store_false", dest="pacer", help="Disable 240Hz software frame pacer")
     parser.add_argument("--no-vsync", "--uncapped", action="store_true", help="Disable VSync for uncapped maximum presentation throughput")
     parser.add_argument("--borderless", action="store_true", help="Enable borderless windowed presentation mode")
+    parser.add_argument("--feedback-ms", type=int, default=300, help="Visual feedback duration in ms (default: 300 ms green border)")
     parser.add_argument("--dataset", type=str, default=str(get_dataset_dir()), help="Path to GAIM240 dataset")
 
     # Workflow mode switches
@@ -99,7 +100,8 @@ Examples:
             dataset_dir=dataset_dir,
             pacer=args.pacer,
             no_vsync=args.no_vsync,
-            borderless=args.borderless
+            borderless=args.borderless,
+            feedback_ms=args.feedback_ms
         )
         return
 
@@ -122,7 +124,8 @@ Examples:
         dataset_dir=dataset_dir,
         pacer=args.pacer,
         no_vsync=args.no_vsync,
-        borderless=args.borderless
+        borderless=args.borderless,
+        feedback_ms=args.feedback_ms
     )
 
 

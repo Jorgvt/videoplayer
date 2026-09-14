@@ -121,6 +121,136 @@ fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
     })
 }
 
+struct BorderShader {
+    program: u32,
+    vbo: u32,
+    u_color_loc: i32,
+}
+
+impl BorderShader {
+    fn new() -> Self {
+        let vert_code = CString::new(
+            "
+            #version 120
+            attribute vec2 position;
+            void main() {
+                gl_Position = vec4(position, 0.0, 1.0);
+            }
+        ",
+        )
+        .unwrap();
+
+        let frag_code = CString::new(
+            "
+            #version 120
+            uniform vec4 u_color;
+            void main() {
+                gl_FragColor = u_color;
+            }
+        ",
+        )
+        .unwrap();
+
+        unsafe {
+            let vert_shader = gl::CreateShader(gl::VERTEX_SHADER);
+            gl::ShaderSource(vert_shader, 1, &vert_code.as_ptr(), std::ptr::null());
+            gl::CompileShader(vert_shader);
+
+            let frag_shader = gl::CreateShader(gl::FRAGMENT_SHADER);
+            gl::ShaderSource(frag_shader, 1, &frag_code.as_ptr(), std::ptr::null());
+            gl::CompileShader(frag_shader);
+
+            let program = gl::CreateProgram();
+            gl::AttachShader(program, vert_shader);
+            gl::AttachShader(program, frag_shader);
+            gl::LinkProgram(program);
+
+            gl::DeleteShader(vert_shader);
+            gl::DeleteShader(frag_shader);
+
+            let mut vbo = 0;
+            gl::GenBuffers(1, &mut vbo);
+
+            let u_color_loc = gl::GetUniformLocation(program, CString::new("u_color").unwrap().as_ptr());
+
+            BorderShader {
+                program,
+                vbo,
+                u_color_loc,
+            }
+        }
+    }
+
+    fn draw_rect_fill(&self, x1: f32, y1: f32, x2: f32, y2: f32) {
+        #[repr(C)]
+        struct Vertex {
+            pos: [f32; 2],
+        }
+
+        let vertices: [Vertex; 6] = [
+            Vertex { pos: [x1, y1] },
+            Vertex { pos: [x2, y1] },
+            Vertex { pos: [x2, y2] },
+            Vertex { pos: [x1, y1] },
+            Vertex { pos: [x2, y2] },
+            Vertex { pos: [x1, y2] },
+        ];
+
+        unsafe {
+            gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
+            gl::BufferData(
+                gl::ARRAY_BUFFER,
+                (vertices.len() * std::mem::size_of::<Vertex>()) as isize,
+                vertices.as_ptr() as *const _,
+                gl::DYNAMIC_DRAW,
+            );
+
+            let pos_attr = CString::new("position").unwrap();
+            let pos_loc = gl::GetAttribLocation(self.program, pos_attr.as_ptr());
+            gl::EnableVertexAttribArray(pos_loc as u32);
+            gl::VertexAttribPointer(
+                pos_loc as u32,
+                2,
+                gl::FLOAT,
+                gl::FALSE,
+                std::mem::size_of::<Vertex>() as i32,
+                0 as *const _,
+            );
+
+            gl::DrawArrays(gl::TRIANGLES, 0, 6);
+        }
+    }
+
+    fn draw_box_border(
+        &self,
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        w_view: i32,
+        h_view: i32,
+        thickness_px: f32,
+        color: [f32; 4],
+    ) {
+        let dx = (thickness_px / w_view as f32) * 2.0;
+        let dy = (thickness_px / h_view as f32) * 2.0;
+
+        unsafe {
+            gl::UseProgram(self.program);
+            gl::Uniform4f(self.u_color_loc, color[0], color[1], color[2], color[3]);
+        }
+
+        // Top edge
+        self.draw_rect_fill(x1, y2 - dy, x2, y2);
+        // Bottom edge
+        self.draw_rect_fill(x1, y1, x2, y1 + dy);
+        // Left edge
+        self.draw_rect_fill(x1, y1, x1 + dx, y2);
+        // Right edge
+        self.draw_rect_fill(x2 - dx, y1, x2, y2);
+    }
+}
+
 struct RgbQuadShader {
     program: u32,
     vbo: u32,
@@ -281,6 +411,7 @@ fn upload_rgb_frame(tex: u32, raw_data: &[u8], frame_idx: usize) {
 fn render_pyramid_rgb(
     window: &mut glfw::Window,
     shader: &RgbQuadShader,
+    border_shader: Option<&BorderShader>,
     tex_a: u32,
     tex_ref: u32,
     tex_c: u32,
@@ -288,6 +419,7 @@ fn render_pyramid_rgb(
     stream_ref: &VideoStreamData,
     stream_c: &VideoStreamData,
     frame_idx: usize,
+    highlight_side: Option<&str>,
 ) {
     let (w, h) = window.get_framebuffer_size();
     let target_aspect = 16.0 / 9.0;
@@ -319,6 +451,16 @@ fn render_pyramid_rgb(
         shader.draw_quad(-0.5, 0.0, 0.5, 1.0, tex_ref);
         shader.draw_quad(-1.0, -1.0, 0.0, 0.0, tex_a);
         shader.draw_quad(0.0, -1.0, 1.0, 0.0, tex_c);
+    }
+
+    if let (Some(side), Some(bs)) = (highlight_side, border_shader) {
+        let green_color = [0.0f32, 0.9f32, 0.35f32, 1.0f32];
+        let thickness = 8.0f32;
+        if side == "LEFT" {
+            bs.draw_box_border(-1.0, -1.0, 0.0, 0.0, w_view, h_view, thickness, green_color);
+        } else if side == "RIGHT" {
+            bs.draw_box_border(0.0, -1.0, 1.0, 0.0, w_view, h_view, thickness, green_color);
+        }
     }
 }
 
@@ -556,6 +698,7 @@ fn upload_yuv_frame(tex: &YuvTextures, raw_data: &[u8], frame_idx: usize) {
 fn render_pyramid_yuv(
     window: &mut glfw::Window,
     shader: &YuvQuadShader,
+    border_shader: Option<&BorderShader>,
     tex_a: &YuvTextures,
     tex_ref: &YuvTextures,
     tex_c: &YuvTextures,
@@ -563,6 +706,7 @@ fn render_pyramid_yuv(
     stream_ref: &VideoStreamData,
     stream_c: &VideoStreamData,
     frame_idx: usize,
+    highlight_side: Option<&str>,
 ) {
     let (w, h) = window.get_framebuffer_size();
     let target_aspect = 16.0 / 9.0;
@@ -595,6 +739,16 @@ fn render_pyramid_yuv(
         shader.draw_quad(-1.0, -1.0, 0.0, 0.0, tex_a.y, tex_a.u, tex_a.v);
         shader.draw_quad(0.0, -1.0, 1.0, 0.0, tex_c.y, tex_c.u, tex_c.v);
     }
+
+    if let (Some(side), Some(bs)) = (highlight_side, border_shader) {
+        let green_color = [0.0f32, 0.9f32, 0.35f32, 1.0f32];
+        let thickness = 8.0f32;
+        if side == "LEFT" {
+            bs.draw_box_border(-1.0, -1.0, 0.0, 0.0, w_view, h_view, thickness, green_color);
+        } else if side == "RIGHT" {
+            bs.draw_box_border(0.0, -1.0, 1.0, 0.0, w_view, h_view, thickness, green_color);
+        }
+    }
 }
 
 fn main() {
@@ -606,6 +760,7 @@ fn main() {
     let mut no_vsync = false;
     let mut use_pacer = true;
     let mut borderless = false;
+    let mut feedback_ms = 300u64;
 
     for arg in &args[1..] {
         if arg.starts_with("--left=") {
@@ -623,6 +778,10 @@ fn main() {
             use_pacer = true;
         } else if arg == "--borderless" {
             borderless = true;
+        } else if arg.starts_with("--feedback-ms=") {
+            if let Ok(val) = arg.trim_start_matches("--feedback-ms=").parse::<u64>() {
+                feedback_ms = val;
+            }
         }
     }
 
@@ -706,6 +865,7 @@ fn main() {
 
     let rgb_shader = if is_rgb_mode { Some(RgbQuadShader::new()) } else { None };
     let yuv_shader = if !is_rgb_mode { Some(YuvQuadShader::new()) } else { None };
+    let border_shader = BorderShader::new();
 
     let rgb_tex_a = if is_rgb_mode { create_rgb_texture() } else { 0 };
     let rgb_tex_ref = if is_rgb_mode { create_rgb_texture() } else { 0 };
@@ -788,23 +948,31 @@ fn main() {
     let mut swap_timestamps: Vec<Instant> = Vec::new();
     let mut step = 0usize;
     let mut choice: Option<String> = None;
+    let mut response_time = 0.0f64;
 
     while !window.should_close() && choice.is_none() {
         glfw.poll_events();
         for (_, event) in glfw::flush_messages(&events) {
             if let glfw::WindowEvent::Key(Key::Left | Key::A | Key::Kp1, _, Action::Press, _) = event {
+                response_time = start_time.elapsed().as_secs_f64();
                 choice = Some("LEFT".to_string());
             } else if let glfw::WindowEvent::Key(Key::Right | Key::D | Key::Kp2, _, Action::Press, _) = event {
+                response_time = start_time.elapsed().as_secs_f64();
                 choice = Some("RIGHT".to_string());
             } else if let glfw::WindowEvent::Key(Key::Escape | Key::Q, _, Action::Press, _) = event {
                 window.set_should_close(true);
             }
         }
 
+        if choice.is_some() || window.should_close() {
+            break;
+        }
+
         if is_rgb_mode {
             render_pyramid_rgb(
                 &mut window,
                 rgb_shader.as_ref().unwrap(),
+                None,
                 rgb_tex_a,
                 rgb_tex_ref,
                 rgb_tex_c,
@@ -812,11 +980,13 @@ fn main() {
                 &tf.ref_stream,
                 &tf.right_stream,
                 step,
+                None,
             );
         } else {
             render_pyramid_yuv(
                 &mut window,
                 yuv_shader.as_ref().unwrap(),
+                None,
                 yuv_tex_a.as_ref().unwrap(),
                 yuv_tex_ref.as_ref().unwrap(),
                 yuv_tex_c.as_ref().unwrap(),
@@ -824,6 +994,7 @@ fn main() {
                 &tf.ref_stream,
                 &tf.right_stream,
                 step,
+                None,
             );
         }
 
@@ -839,7 +1010,66 @@ fn main() {
         }
     }
 
-    let response_time = start_time.elapsed().as_secs_f64();
+    // Visual Feedback Phase: Draw green border around chosen side and freeze frame
+    if let Some(ref ch) = choice {
+        if !window.should_close() && feedback_ms > 0 {
+            let freeze_step = step.saturating_sub(1);
+            let feedback_start = Instant::now();
+            let feedback_dur = std::time::Duration::from_millis(feedback_ms);
+            let mut fb_step = step;
+
+            while !window.should_close() && feedback_start.elapsed() < feedback_dur {
+                glfw.poll_events();
+                for (_, event) in glfw::flush_messages(&events) {
+                    if let glfw::WindowEvent::Key(Key::Escape | Key::Q, _, Action::Press, _) = event {
+                        window.set_should_close(true);
+                    }
+                }
+
+                if is_rgb_mode {
+                    render_pyramid_rgb(
+                        &mut window,
+                        rgb_shader.as_ref().unwrap(),
+                        Some(&border_shader),
+                        rgb_tex_a,
+                        rgb_tex_ref,
+                        rgb_tex_c,
+                        &tf.left_stream,
+                        &tf.ref_stream,
+                        &tf.right_stream,
+                        freeze_step,
+                        Some(ch.as_str()),
+                    );
+                } else {
+                    render_pyramid_yuv(
+                        &mut window,
+                        yuv_shader.as_ref().unwrap(),
+                        Some(&border_shader),
+                        yuv_tex_a.as_ref().unwrap(),
+                        yuv_tex_ref.as_ref().unwrap(),
+                        yuv_tex_c.as_ref().unwrap(),
+                        &tf.left_stream,
+                        &tf.ref_stream,
+                        &tf.right_stream,
+                        freeze_step,
+                        Some(ch.as_str()),
+                    );
+                }
+
+                swap_timestamps.push(Instant::now());
+                window.swap_buffers();
+                fb_step += 1;
+
+                if use_pacer {
+                    let target_time = start_time + std::time::Duration::from_nanos(fb_step as u64 * 4_166_667);
+                    while Instant::now() < target_time {
+                        std::hint::spin_loop();
+                    }
+                }
+            }
+        }
+    }
+
     let mut actual_fps = 239.76;
     if swap_timestamps.len() > 1 {
         let total_dur = swap_timestamps
@@ -853,12 +1083,23 @@ fn main() {
     }
 
     unsafe {
+        gl::DeleteProgram(border_shader.program);
+        gl::DeleteBuffers(1, &border_shader.vbo);
+
         if is_rgb_mode {
             let textures = [rgb_tex_a, rgb_tex_ref, rgb_tex_c];
             gl::DeleteTextures(3, textures.as_ptr());
+            if let Some(s) = rgb_shader {
+                gl::DeleteProgram(s.program);
+                gl::DeleteBuffers(1, &s.vbo);
+            }
         } else if let (Some(a), Some(r), Some(c)) = (yuv_tex_a, yuv_tex_ref, yuv_tex_c) {
             let textures = [a.y, a.u, a.v, r.y, r.u, r.v, c.y, c.u, c.v];
             gl::DeleteTextures(9, textures.as_ptr());
+            if let Some(s) = yuv_shader {
+                gl::DeleteProgram(s.program);
+                gl::DeleteBuffers(1, &s.vbo);
+            }
         }
     }
 
