@@ -938,7 +938,8 @@ fn main() {
         use std::io::Write;
         print!("Warming up GPU and compiling shaders... ");
         std::io::stdout().flush().ok();
-        let dummy_data = vec![0u8; FRAME_SIZE];
+        let mut dummy_data = vec![0u8; FRAME_SIZE];
+        dummy_data[Y_SIZE..].fill(128);
         let y_ptr = &dummy_data[0];
         let u_ptr = &dummy_data[Y_SIZE];
         let v_ptr = &dummy_data[Y_SIZE + UV_SIZE];

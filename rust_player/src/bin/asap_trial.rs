@@ -715,42 +715,68 @@ fn main() {
     let yuv_tex_ref = if !is_rgb_mode { Some(create_yuv_textures()) } else { None };
     let yuv_tex_c = if !is_rgb_mode { Some(create_yuv_textures()) } else { None };
 
-    // GPU and Shader Warmup Phase (60 dummy frames with 4ms pacing)
+    // GPU and Shader Warmup Phase (60 black dummy frames with 4ms pacing)
     {
+        let (w, h) = window.get_framebuffer_size();
+        let target_aspect = 16.0 / 9.0;
+        let mut w_view = w;
+        let mut h_view = (w as f32 / target_aspect) as i32;
+        if h_view > h {
+            h_view = h;
+            w_view = (h as f32 * target_aspect) as i32;
+        }
+        let x_offset = (w - w_view) / 2;
+        let y_offset = (h - h_view) / 2;
+
         if is_rgb_mode {
             let dummy_data = vec![0u8; RGB_FRAME_SIZE];
+            upload_rgb_frame(rgb_tex_a, &dummy_data, 0);
+            upload_rgb_frame(rgb_tex_ref, &dummy_data, 0);
+            upload_rgb_frame(rgb_tex_c, &dummy_data, 0);
+
             for _ in 0..60 {
-                upload_rgb_frame(rgb_tex_a, &dummy_data, 0);
-                upload_rgb_frame(rgb_tex_ref, &dummy_data, 0);
-                upload_rgb_frame(rgb_tex_c, &dummy_data, 0);
-                render_pyramid_rgb(
-                    &mut window,
-                    rgb_shader.as_ref().unwrap(),
-                    rgb_tex_a,
-                    rgb_tex_ref,
-                    rgb_tex_c,
-                    &tf.left_stream,
-                    &tf.ref_stream,
-                    &tf.right_stream,
-                    0,
-                );
+                unsafe {
+                    gl::Viewport(0, 0, w, h);
+                    gl::ClearColor(0.02, 0.02, 0.03, 1.0);
+                    gl::Clear(gl::COLOR_BUFFER_BIT);
+
+                    gl::Viewport(x_offset, y_offset, w_view, h_view);
+
+                    let s = rgb_shader.as_ref().unwrap();
+                    s.draw_quad(-0.5, 0.0, 0.5, 1.0, rgb_tex_ref);
+                    s.draw_quad(-1.0, -1.0, 0.0, 0.0, rgb_tex_a);
+                    s.draw_quad(0.0, -1.0, 1.0, 0.0, rgb_tex_c);
+                }
                 window.swap_buffers();
                 glfw.poll_events();
                 std::thread::sleep(std::time::Duration::from_millis(4));
             }
         } else {
+            let mut dummy_data = vec![0u8; FRAME_SIZE];
+            // In YUV420p, Y=0 (black), U=128, V=128 (neutral chroma)
+            dummy_data[Y_SIZE..].fill(128);
+
+            let tex_a = yuv_tex_a.as_ref().unwrap();
+            let tex_ref = yuv_tex_ref.as_ref().unwrap();
+            let tex_c = yuv_tex_c.as_ref().unwrap();
+
+            upload_yuv_frame(tex_a, &dummy_data, 0);
+            upload_yuv_frame(tex_ref, &dummy_data, 0);
+            upload_yuv_frame(tex_c, &dummy_data, 0);
+
             for _ in 0..60 {
-                render_pyramid_yuv(
-                    &mut window,
-                    yuv_shader.as_ref().unwrap(),
-                    yuv_tex_a.as_ref().unwrap(),
-                    yuv_tex_ref.as_ref().unwrap(),
-                    yuv_tex_c.as_ref().unwrap(),
-                    &tf.left_stream,
-                    &tf.ref_stream,
-                    &tf.right_stream,
-                    0,
-                );
+                unsafe {
+                    gl::Viewport(0, 0, w, h);
+                    gl::ClearColor(0.02, 0.02, 0.03, 1.0);
+                    gl::Clear(gl::COLOR_BUFFER_BIT);
+
+                    gl::Viewport(x_offset, y_offset, w_view, h_view);
+
+                    let s = yuv_shader.as_ref().unwrap();
+                    s.draw_quad(-0.5, 0.0, 0.5, 1.0, tex_ref.y, tex_ref.u, tex_ref.v);
+                    s.draw_quad(-1.0, -1.0, 0.0, 0.0, tex_a.y, tex_a.u, tex_a.v);
+                    s.draw_quad(0.0, -1.0, 1.0, 0.0, tex_c.y, tex_c.u, tex_c.v);
+                }
                 window.swap_buffers();
                 glfw.poll_events();
                 std::thread::sleep(std::time::Duration::from_millis(4));
