@@ -121,6 +121,113 @@ fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
     })
 }
 
+fn get_font_glyph(c: char) -> [u8; 8] {
+    match c {
+        '0' => [0x3C, 0x66, 0x6E, 0x76, 0x66, 0x66, 0x3C, 0x00],
+        '1' => [0x18, 0x38, 0x18, 0x18, 0x18, 0x18, 0x7E, 0x00],
+        '2' => [0x3C, 0x66, 0x06, 0x1C, 0x30, 0x66, 0x7E, 0x00],
+        '3' => [0x3C, 0x66, 0x06, 0x1C, 0x06, 0x66, 0x3C, 0x00],
+        '4' => [0x0C, 0x1C, 0x34, 0x64, 0x7E, 0x04, 0x0E, 0x00],
+        '5' => [0x7E, 0x60, 0x7C, 0x06, 0x06, 0x66, 0x3C, 0x00],
+        '6' => [0x1C, 0x30, 0x60, 0x7C, 0x66, 0x66, 0x3C, 0x00],
+        '7' => [0x7E, 0x66, 0x0C, 0x18, 0x18, 0x18, 0x18, 0x00],
+        '8' => [0x3C, 0x66, 0x66, 0x3C, 0x66, 0x66, 0x3C, 0x00],
+        '9' => [0x3C, 0x66, 0x66, 0x3E, 0x06, 0x0C, 0x38, 0x00],
+        'A' | 'a' => [0x18, 0x3C, 0x66, 0x7E, 0x66, 0x66, 0x66, 0x00],
+        'B' | 'b' => [0x7C, 0x66, 0x66, 0x7C, 0x66, 0x66, 0x7C, 0x00],
+        'C' | 'c' => [0x3C, 0x66, 0x60, 0x60, 0x60, 0x66, 0x3C, 0x00],
+        'D' | 'd' => [0x78, 0x6C, 0x66, 0x66, 0x66, 0x6C, 0x78, 0x00],
+        'E' | 'e' => [0x7E, 0x60, 0x60, 0x7C, 0x60, 0x60, 0x7E, 0x00],
+        'F' | 'f' => [0x7E, 0x60, 0x60, 0x7C, 0x60, 0x60, 0x60, 0x00],
+        'G' | 'g' => [0x3C, 0x66, 0x60, 0x6E, 0x66, 0x66, 0x3A, 0x00],
+        'H' | 'h' => [0x66, 0x66, 0x66, 0x7E, 0x66, 0x66, 0x66, 0x00],
+        'I' | 'i' => [0x3C, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00],
+        'J' | 'j' => [0x1E, 0x0C, 0x0C, 0x0C, 0x0C, 0x6C, 0x38, 0x00],
+        'K' | 'k' => [0x66, 0x6C, 0x78, 0x70, 0x78, 0x6C, 0x66, 0x00],
+        'L' | 'l' => [0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x7E, 0x00],
+        'M' | 'm' => [0x63, 0x77, 0x7F, 0x6B, 0x63, 0x63, 0x63, 0x00],
+        'N' | 'n' => [0x66, 0x76, 0x7E, 0x7E, 0x6E, 0x66, 0x66, 0x00],
+        'O' | 'o' => [0x3C, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00],
+        'P' | 'p' => [0x7C, 0x66, 0x66, 0x7C, 0x60, 0x60, 0x60, 0x00],
+        'Q' | 'q' => [0x3C, 0x66, 0x66, 0x66, 0x6A, 0x6C, 0x36, 0x00],
+        'R' | 'r' => [0x7C, 0x66, 0x66, 0x7C, 0x6C, 0x66, 0x66, 0x00],
+        'S' | 's' => [0x3C, 0x66, 0x60, 0x3C, 0x06, 0x66, 0x3C, 0x00],
+        'T' | 't' => [0x7E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00],
+        'U' | 'u' => [0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00],
+        'V' | 'v' => [0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x18, 0x00],
+        'W' | 'w' => [0x63, 0x63, 0x63, 0x6B, 0x7F, 0x77, 0x63, 0x00],
+        'X' | 'x' => [0x66, 0x66, 0x3C, 0x18, 0x3C, 0x66, 0x66, 0x00],
+        'Y' | 'y' => [0x66, 0x66, 0x66, 0x3C, 0x18, 0x18, 0x18, 0x00],
+        'Z' | 'z' => [0x7E, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x7E, 0x00],
+        '/' => [0x02, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x40, 0x00],
+        '%' => [0x62, 0x64, 0x08, 0x10, 0x20, 0x26, 0x46, 0x00],
+        '(' => [0x0C, 0x18, 0x30, 0x30, 0x30, 0x18, 0x0C, 0x00],
+        ')' => [0x30, 0x18, 0x0C, 0x0C, 0x0C, 0x18, 0x30, 0x00],
+        '-' => [0x00, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x00, 0x00],
+        ':' => [0x00, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00],
+        '.' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00],
+        ',' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x30],
+        _ => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+    }
+}
+
+fn create_text_texture(text: &str) -> (u32, usize, usize) {
+    let scale = 4usize;
+    let char_w = 8 * scale;
+    let char_h = 8 * scale;
+    let width = text.len() * char_w;
+    let height = char_h;
+
+    let mut rgba_data = vec![0u8; width * height * 4];
+
+    for (ci, c) in text.chars().enumerate() {
+        let glyph = get_font_glyph(c);
+        let x_offset = ci * char_w;
+        for (row_i, &row_byte) in glyph.iter().enumerate() {
+            for col_i in 0..8 {
+                let bit_set = ((row_byte >> (7 - col_i)) & 1) == 1;
+                if bit_set {
+                    for sy in 0..scale {
+                        for sx in 0..scale {
+                            let px = x_offset + col_i * scale + sx;
+                            let py = row_i * scale + sy;
+                            let idx = (py * width + px) * 4;
+                            if idx + 3 < rgba_data.len() {
+                                rgba_data[idx] = 230;     // R
+                                rgba_data[idx + 1] = 232; // G
+                                rgba_data[idx + 2] = 238; // B
+                                rgba_data[idx + 3] = 255; // A
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut tex = 0;
+    unsafe {
+        gl::GenTextures(1, &mut tex);
+        gl::BindTexture(gl::TEXTURE_2D, tex);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
+        gl::TexImage2D(
+            gl::TEXTURE_2D,
+            0,
+            gl::RGBA as i32,
+            width as i32,
+            height as i32,
+            0,
+            gl::RGBA,
+            gl::UNSIGNED_BYTE,
+            rgba_data.as_ptr() as *const _,
+        );
+    }
+    (tex, width, height)
+}
+
 struct BorderShader {
     program: u32,
     vbo: u32,
@@ -219,6 +326,14 @@ impl BorderShader {
 
             gl::DrawArrays(gl::TRIANGLES, 0, 6);
         }
+    }
+
+    fn draw_rect_fill_colored(&self, x1: f32, y1: f32, x2: f32, y2: f32, color: [f32; 4]) {
+        unsafe {
+            gl::UseProgram(self.program);
+            gl::Uniform4f(self.u_color_loc, color[0], color[1], color[2], color[3]);
+        }
+        self.draw_rect_fill(x1, y1, x2, y2);
     }
 
     fn draw_box_border(
@@ -761,6 +876,9 @@ fn main() {
     let mut use_pacer = true;
     let mut borderless = false;
     let mut feedback_ms = 300u64;
+    let mut warmup_ms = 500u64;
+    let mut trial_num: usize = 0;
+    let mut total_trials: usize = 0;
 
     for arg in &args[1..] {
         if arg.starts_with("--left=") {
@@ -781,6 +899,18 @@ fn main() {
         } else if arg.starts_with("--feedback-ms=") {
             if let Ok(val) = arg.trim_start_matches("--feedback-ms=").parse::<u64>() {
                 feedback_ms = val;
+            }
+        } else if arg.starts_with("--warmup-ms=") {
+            if let Ok(val) = arg.trim_start_matches("--warmup-ms=").parse::<u64>() {
+                warmup_ms = val;
+            }
+        } else if arg.starts_with("--trial=") {
+            if let Ok(val) = arg.trim_start_matches("--trial=").parse::<usize>() {
+                trial_num = val;
+            }
+        } else if arg.starts_with("--total-trials=") {
+            if let Ok(val) = arg.trim_start_matches("--total-trials=").parse::<usize>() {
+                total_trials = val;
             }
         }
     }
@@ -855,6 +985,7 @@ fn main() {
 
     window.make_current();
     window.set_key_polling(true);
+    window.set_cursor_mode(glfw::CursorMode::Hidden);
     if no_vsync {
         glfw.set_swap_interval(glfw::SwapInterval::None);
     } else {
@@ -863,7 +994,7 @@ fn main() {
 
     gl::load_with(|s| window.get_proc_address(s) as *const _);
 
-    let rgb_shader = if is_rgb_mode { Some(RgbQuadShader::new()) } else { None };
+    let quad_shader = RgbQuadShader::new();
     let yuv_shader = if !is_rgb_mode { Some(YuvQuadShader::new()) } else { None };
     let border_shader = BorderShader::new();
 
@@ -875,7 +1006,7 @@ fn main() {
     let yuv_tex_ref = if !is_rgb_mode { Some(create_yuv_textures()) } else { None };
     let yuv_tex_c = if !is_rgb_mode { Some(create_yuv_textures()) } else { None };
 
-    // GPU and Shader Warmup Phase (60 black dummy frames with 4ms pacing)
+    // GPU, Texture, and Shader Warmup Phase + Trial Progress Display
     {
         let (w, h) = window.get_framebuffer_size();
         let target_aspect = 16.0 / 9.0;
@@ -888,58 +1019,94 @@ fn main() {
         let x_offset = (w - w_view) / 2;
         let y_offset = (h - h_view) / 2;
 
-        if is_rgb_mode {
-            let dummy_data = vec![0u8; RGB_FRAME_SIZE];
-            upload_rgb_frame(rgb_tex_a, &dummy_data, 0);
-            upload_rgb_frame(rgb_tex_ref, &dummy_data, 0);
-            upload_rgb_frame(rgb_tex_c, &dummy_data, 0);
+        let (title_tex, title_w, _) = if total_trials > 0 {
+            create_text_texture(&format!("Trial {} / {}", trial_num, total_trials))
+        } else {
+            (0, 0, 0)
+        };
 
-            for _ in 0..60 {
-                unsafe {
-                    gl::Viewport(0, 0, w, h);
-                    gl::ClearColor(0.02, 0.02, 0.03, 1.0);
-                    gl::Clear(gl::COLOR_BUFFER_BIT);
+        let (pct_tex, pct_w, _) = if total_trials > 0 {
+            let pct = (trial_num * 100) / total_trials;
+            create_text_texture(&format!("({}%)", pct))
+        } else {
+            (0, 0, 0)
+        };
 
-                    gl::Viewport(x_offset, y_offset, w_view, h_view);
+        let hw_title = if total_trials > 0 {
+            (0.09 * (title_w as f32 / 32.0) * (9.0 / 16.0)) / 2.0
+        } else {
+            0.0
+        };
 
-                    let s = rgb_shader.as_ref().unwrap();
-                    s.draw_quad(-0.5, 0.0, 0.5, 1.0, rgb_tex_ref);
-                    s.draw_quad(-1.0, -1.0, 0.0, 0.0, rgb_tex_a);
-                    s.draw_quad(0.0, -1.0, 1.0, 0.0, rgb_tex_c);
+        let hw_pct = if total_trials > 0 {
+            (0.055 * (pct_w as f32 / 32.0) * (9.0 / 16.0)) / 2.0
+        } else {
+            0.0
+        };
+
+        let fraction = if total_trials > 0 {
+            (trial_num as f32 / total_trials as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let fill_x = -0.25 + 0.50 * fraction;
+
+        let warmup_start = Instant::now();
+        let warmup_dur = std::time::Duration::from_millis(warmup_ms);
+        let mut warmup_step = 0usize;
+
+        while warmup_start.elapsed() < warmup_dur && !window.should_close() {
+            glfw.poll_events();
+            for (_, event) in glfw::flush_messages(&events) {
+                if let glfw::WindowEvent::Key(Key::Escape | Key::Q, _, Action::Press, _) = event {
+                    window.set_should_close(true);
                 }
-                window.swap_buffers();
-                glfw.poll_events();
+            }
+
+            unsafe {
+                gl::Viewport(0, 0, w, h);
+                gl::ClearColor(0.02, 0.02, 0.03, 1.0);
+                gl::Clear(gl::COLOR_BUFFER_BIT);
+
+                gl::Viewport(x_offset, y_offset, w_view, h_view);
+
+                if total_trials > 0 {
+                    gl::Enable(gl::BLEND);
+                    gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+
+                    // 1. Draw Title "Trial X / Y"
+                    quad_shader.draw_quad(-hw_title, 0.04, hw_title, 0.13, title_tex);
+
+                    // 2. Draw Progress Track & Fill
+                    border_shader.draw_rect_fill_colored(-0.25, -0.025, 0.25, -0.010, [0.12, 0.12, 0.16, 1.0]);
+                    border_shader.draw_rect_fill_colored(-0.25, -0.025, fill_x, -0.010, [0.0, 0.88, 0.45, 1.0]);
+
+                    // 3. Draw Percentage "(Z%)"
+                    quad_shader.draw_quad(-hw_pct, -0.09, hw_pct, -0.035, pct_tex);
+
+                    gl::Disable(gl::BLEND);
+                }
+            }
+
+            window.swap_buffers();
+            warmup_step += 1;
+
+            if use_pacer {
+                let target = warmup_start + std::time::Duration::from_nanos(warmup_step as u64 * 4_166_667);
+                while Instant::now() < target {
+                    std::hint::spin_loop();
+                }
+            } else {
                 std::thread::sleep(std::time::Duration::from_millis(4));
             }
-        } else {
-            let mut dummy_data = vec![0u8; FRAME_SIZE];
-            // In YUV420p, Y=0 (black), U=128, V=128 (neutral chroma)
-            dummy_data[Y_SIZE..].fill(128);
+        }
 
-            let tex_a = yuv_tex_a.as_ref().unwrap();
-            let tex_ref = yuv_tex_ref.as_ref().unwrap();
-            let tex_c = yuv_tex_c.as_ref().unwrap();
-
-            upload_yuv_frame(tex_a, &dummy_data, 0);
-            upload_yuv_frame(tex_ref, &dummy_data, 0);
-            upload_yuv_frame(tex_c, &dummy_data, 0);
-
-            for _ in 0..60 {
-                unsafe {
-                    gl::Viewport(0, 0, w, h);
-                    gl::ClearColor(0.02, 0.02, 0.03, 1.0);
-                    gl::Clear(gl::COLOR_BUFFER_BIT);
-
-                    gl::Viewport(x_offset, y_offset, w_view, h_view);
-
-                    let s = yuv_shader.as_ref().unwrap();
-                    s.draw_quad(-0.5, 0.0, 0.5, 1.0, tex_ref.y, tex_ref.u, tex_ref.v);
-                    s.draw_quad(-1.0, -1.0, 0.0, 0.0, tex_a.y, tex_a.u, tex_a.v);
-                    s.draw_quad(0.0, -1.0, 1.0, 0.0, tex_c.y, tex_c.u, tex_c.v);
-                }
-                window.swap_buffers();
-                glfw.poll_events();
-                std::thread::sleep(std::time::Duration::from_millis(4));
+        unsafe {
+            if title_tex != 0 {
+                gl::DeleteTextures(1, &title_tex);
+            }
+            if pct_tex != 0 {
+                gl::DeleteTextures(1, &pct_tex);
             }
         }
     }
@@ -971,7 +1138,7 @@ fn main() {
         if is_rgb_mode {
             render_pyramid_rgb(
                 &mut window,
-                rgb_shader.as_ref().unwrap(),
+                &quad_shader,
                 None,
                 rgb_tex_a,
                 rgb_tex_ref,
@@ -1029,7 +1196,7 @@ fn main() {
                 if is_rgb_mode {
                     render_pyramid_rgb(
                         &mut window,
-                        rgb_shader.as_ref().unwrap(),
+                        &quad_shader,
                         Some(&border_shader),
                         rgb_tex_a,
                         rgb_tex_ref,
@@ -1086,13 +1253,12 @@ fn main() {
         gl::DeleteProgram(border_shader.program);
         gl::DeleteBuffers(1, &border_shader.vbo);
 
+        gl::DeleteProgram(quad_shader.program);
+        gl::DeleteBuffers(1, &quad_shader.vbo);
+
         if is_rgb_mode {
             let textures = [rgb_tex_a, rgb_tex_ref, rgb_tex_c];
             gl::DeleteTextures(3, textures.as_ptr());
-            if let Some(s) = rgb_shader {
-                gl::DeleteProgram(s.program);
-                gl::DeleteBuffers(1, &s.vbo);
-            }
         } else if let (Some(a), Some(r), Some(c)) = (yuv_tex_a, yuv_tex_ref, yuv_tex_c) {
             let textures = [a.y, a.u, a.v, r.y, r.u, r.v, c.y, c.u, c.v];
             gl::DeleteTextures(9, textures.as_ptr());

@@ -920,6 +920,7 @@ fn main() {
 
     window.make_current();
     window.set_key_polling(true);
+    window.set_cursor_mode(glfw::CursorMode::Hidden);
     if no_vsync {
         glfw.set_swap_interval(glfw::SwapInterval::None);
     } else {
