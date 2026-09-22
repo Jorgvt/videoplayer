@@ -548,13 +548,12 @@ fn render_pyramid_rgb(
     let x_offset = (w - w_view) / 2;
     let y_offset = (h - h_view) / 2;
 
-    let idx_a = if stream_a.num_frames > 0 { frame_idx % stream_a.num_frames } else { 0 };
-    let idx_ref = if stream_ref.num_frames > 0 { frame_idx % stream_ref.num_frames } else { 0 };
-    let idx_c = if stream_c.num_frames > 0 { frame_idx % stream_c.num_frames } else { 0 };
+    let min_frames = stream_a.num_frames.min(stream_ref.num_frames).min(stream_c.num_frames);
+    let cur_frame = if min_frames > 0 { frame_idx % min_frames } else { 0 };
 
-    upload_rgb_frame(tex_a, &stream_a.data, idx_a);
-    upload_rgb_frame(tex_ref, &stream_ref.data, idx_ref);
-    upload_rgb_frame(tex_c, &stream_c.data, idx_c);
+    upload_rgb_frame(tex_a, &stream_a.data, cur_frame);
+    upload_rgb_frame(tex_ref, &stream_ref.data, cur_frame);
+    upload_rgb_frame(tex_c, &stream_c.data, cur_frame);
 
     unsafe {
         gl::Viewport(0, 0, w, h);
@@ -835,13 +834,12 @@ fn render_pyramid_yuv(
     let x_offset = (w - w_view) / 2;
     let y_offset = (h - h_view) / 2;
 
-    let idx_a = if stream_a.num_frames > 0 { frame_idx % stream_a.num_frames } else { 0 };
-    let idx_ref = if stream_ref.num_frames > 0 { frame_idx % stream_ref.num_frames } else { 0 };
-    let idx_c = if stream_c.num_frames > 0 { frame_idx % stream_c.num_frames } else { 0 };
+    let min_frames = stream_a.num_frames.min(stream_ref.num_frames).min(stream_c.num_frames);
+    let cur_frame = if min_frames > 0 { frame_idx % min_frames } else { 0 };
 
-    upload_yuv_frame(tex_a, &stream_a.data, idx_a);
-    upload_yuv_frame(tex_ref, &stream_ref.data, idx_ref);
-    upload_yuv_frame(tex_c, &stream_c.data, idx_c);
+    upload_yuv_frame(tex_a, &stream_a.data, cur_frame);
+    upload_yuv_frame(tex_ref, &stream_ref.data, cur_frame);
+    upload_yuv_frame(tex_c, &stream_c.data, cur_frame);
 
     unsafe {
         gl::Viewport(0, 0, w, h);
@@ -935,12 +933,20 @@ fn main() {
         right_stream,
     };
 
-    if tf.left_stream.num_frames == 0
-        || tf.ref_stream.num_frames == 0
-        || tf.right_stream.num_frames == 0
-    {
+    let min_frames = tf.left_stream.num_frames
+        .min(tf.ref_stream.num_frames)
+        .min(tf.right_stream.num_frames);
+
+    if min_frames == 0 {
         println!("Error: Failed to decode one or more video streams.");
         return;
+    }
+
+    if tf.left_stream.num_frames != tf.ref_stream.num_frames || tf.ref_stream.num_frames != tf.right_stream.num_frames {
+        println!(
+            "  [Sync] Stream frame counts differ (Left: {}, Ref: {}, Right: {}). Synchronized playback to shortest ({} frames).",
+            tf.left_stream.num_frames, tf.ref_stream.num_frames, tf.right_stream.num_frames, min_frames
+        );
     }
 
     let is_rgb_mode = tf.left_stream.is_rgb && tf.ref_stream.is_rgb && tf.right_stream.is_rgb;
