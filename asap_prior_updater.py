@@ -166,7 +166,14 @@ def update_priors_and_scores(
             writer.writerows(all_score_rows)
         print(f"[ASAP Prior Updater] Saved per-scene quality scores: {scores_csv.resolve()}\n")
 
-    # 4. Display terminal summary
+    # 4. Also export pwcmp compatible formats for collaborators
+    try:
+        from export_pwcmp_format import export_pwcmp
+        export_pwcmp(dataset_dir=dataset_dir, results_dir=results_dir)
+    except Exception as e:
+        print(f"[ASAP Prior Updater] Warning: Could not export pwcmp format: {e}")
+
+    # 5. Display terminal summary
     print("================================================================================")
     print("           GAIM240 PER-SCENE ACTIVE SAMPLING (ASAP) POSTERIOR SUMMARY           ")
     print("================================================================================")
