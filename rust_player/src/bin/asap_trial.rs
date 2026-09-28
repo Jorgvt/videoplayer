@@ -1203,10 +1203,9 @@ fn main() {
         }
     }
 
-    // Visual Feedback Phase: Draw green border around chosen side and freeze frame
+    // Visual Feedback Phase: Draw green border around chosen side with continuous playback
     if let Some(ref ch) = choice {
         if !window.should_close() && feedback_ms > 0 {
-            let freeze_step = step.saturating_sub(1);
             let feedback_start = Instant::now();
             let feedback_dur = std::time::Duration::from_millis(feedback_ms);
             let mut fb_step = step;
@@ -1230,7 +1229,7 @@ fn main() {
                         &tf.left_stream,
                         &tf.ref_stream,
                         &tf.right_stream,
-                        freeze_step,
+                        fb_step,
                         Some(ch.as_str()),
                     );
                 } else {
@@ -1244,7 +1243,7 @@ fn main() {
                         &tf.left_stream,
                         &tf.ref_stream,
                         &tf.right_stream,
-                        freeze_step,
+                        fb_step,
                         Some(ch.as_str()),
                     );
                 }
