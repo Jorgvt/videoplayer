@@ -1380,6 +1380,17 @@ fn main() {
                 }
             }
 
+            // Immediately clear video buffers from screen so no static frame lingers before progress screen
+            if !window.should_close() {
+                let (w, h) = window.get_framebuffer_size();
+                unsafe {
+                    gl::Viewport(0, 0, w, h);
+                    gl::ClearColor(0.02, 0.02, 0.03, 1.0);
+                    gl::Clear(gl::COLOR_BUFFER_BIT);
+                }
+                window.swap_buffers();
+            }
+
             // Calculate presentation FPS
             let mut actual_fps = 239.76;
             if swap_timestamps.len() > 1 {
