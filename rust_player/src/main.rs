@@ -205,7 +205,18 @@ fn spawn_ffmpeg_cmd(path: &str) -> std::process::Child {
     child
 }
 
+fn get_scene_frame_limit(path: &str) -> usize {
+    let p_lower = path.to_lowercase();
+    if p_lower.contains("attic") || p_lower.contains("classroom") || p_lower.contains("marbles") {
+        960 // 4.0 seconds @ 240 fps
+    } else {
+        1200 // 5.0 seconds @ 240 fps
+    }
+}
+
 fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
+    let max_frames = get_scene_frame_limit(&path);
+
     use std::process::Command;
 
     // Locate the ffmpeg binary: prefer bundled copies, fall back to system PATH.
@@ -245,7 +256,7 @@ fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
         cmd.env("PATH", format!("{};{};{}", dll_dir1, dll_dir2, current_path));
     }
 
-    let mut raw_data = Vec::with_capacity(1200 * FRAME_SIZE);
+    let mut raw_data = Vec::with_capacity(max_frames * FRAME_SIZE);
 
     #[cfg(target_os = "windows")]
     {
@@ -307,6 +318,11 @@ fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
             }
             child.wait().ok();
         }
+    }
+
+    let max_bytes = max_frames * FRAME_SIZE;
+    if raw_data.len() > max_bytes {
+        raw_data.truncate(max_bytes);
     }
 
     let num_frames = raw_data.len() / FRAME_SIZE;

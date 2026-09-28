@@ -93,9 +93,24 @@ struct TrialResultRecord {
     presentation_fps: f64,
 }
 
+fn get_scene_frame_limit(path: &str) -> usize {
+    let p_lower = path.to_lowercase();
+    if p_lower.contains("attic") || p_lower.contains("classroom") || p_lower.contains("marbles") {
+        960 // 4.0 seconds @ 240 fps
+    } else {
+        1200 // 5.0 seconds @ 240 fps
+    }
+}
+
 fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
+    let max_frames = get_scene_frame_limit(&path);
+
     if path.ends_with(".rgb") || path.ends_with(".raw") {
-        let raw_data = std::fs::read(&path).unwrap_or_default();
+        let max_bytes = max_frames * RGB_FRAME_SIZE;
+        let mut raw_data = std::fs::read(&path).unwrap_or_default();
+        if raw_data.len() > max_bytes {
+            raw_data.truncate(max_bytes);
+        }
         let num_frames = raw_data.len() / RGB_FRAME_SIZE;
         return Arc::new(VideoStreamData {
             num_frames,
@@ -158,6 +173,11 @@ fn decode_video_cmd(path: String) -> Arc<VideoStreamData> {
     let mut raw_data = Vec::new();
     if let Ok(out) = output {
         raw_data = out.stdout;
+    }
+
+    let max_bytes = max_frames * FRAME_SIZE;
+    if raw_data.len() > max_bytes {
+        raw_data.truncate(max_bytes);
     }
 
     let num_frames = raw_data.len() / FRAME_SIZE;
@@ -1208,9 +1228,11 @@ fn main() {
             None => rx.recv().expect("Failed to receive decoded video frames"),
         };
 
+        let scene_limit = get_scene_frame_limit(&row.scene);
         let min_frames = tf.left_stream.num_frames
             .min(tf.ref_stream.num_frames)
-            .min(tf.right_stream.num_frames);
+            .min(tf.right_stream.num_frames)
+            .min(scene_limit);
 
         if min_frames == 0 {
             eprintln!("Error: Failed to decode one or more streams for trial #{}. Skipping.", trial_num);
