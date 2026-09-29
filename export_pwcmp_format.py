@@ -32,6 +32,8 @@ def clean_cond_name(cond_str: str) -> str:
 def parse_metric_and_level(cond_str: str):
     """Extracts (metric, level) from clean condition name (e.g. 'restir_level0' -> ('restir', 'level0'))."""
     clean = clean_cond_name(cond_str)
+    if clean == "reference":
+        return "reference", "reference"
     if "_level" in clean:
         parts = clean.rsplit("_level", 1)
         return parts[0], f"level{parts[1]}"
