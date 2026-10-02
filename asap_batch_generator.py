@@ -53,7 +53,7 @@ SCENES = [
 
 def discover_scene_conditions(dataset_dir: Path, scene: str) -> Tuple[List[Dict], Dict[str, int]]:
     """
-    Discovers all distortion conditions for a given scene in the dataset directory.
+    Discovers all conditions (including uncorrupted reference) for a given scene in the dataset directory.
     Supports both hierarchical (/scene/metric/level/video0.rgb or .mp4) and flat (scene_metric_level.mp4) layouts.
     Returns (conditions_list, condition_name_to_index_map).
     """
@@ -72,6 +72,18 @@ def discover_scene_conditions(dataset_dir: Path, scene: str) -> Tuple[List[Dict]
             raise FileNotFoundError(f"Reference video missing for scene '{scene}' in {dataset_dir}")
 
         conditions = []
+        # Include reference as anchor condition (index 0)
+        cond_name = f"{scene}:reference"
+        conditions.append({
+            "name": cond_name,
+            "scene": scene,
+            "filename": f"{scene}/reference/{ref_path.name}",
+            "metric": "reference",
+            "level": "reference",
+            "path": str(ref_path.resolve()),
+            "ref_path": str(ref_path.resolve()),
+        })
+
         for metric_dir in sorted(scene_dir.iterdir()):
             if not metric_dir.is_dir() or metric_dir.name == "reference":
                 continue
@@ -112,6 +124,17 @@ def discover_scene_conditions(dataset_dir: Path, scene: str) -> Tuple[List[Dict]
 
     prefix = f"{scene}_"
     conditions = []
+    # Include reference as anchor condition (index 0)
+    conditions.append({
+        "name": f"{scene}:reference",
+        "scene": scene,
+        "filename": ref_path.name,
+        "metric": "reference",
+        "level": "reference",
+        "path": str(ref_path.resolve()),
+        "ref_path": str(ref_path.resolve()),
+    })
+
     for p in sorted(dataset_dir.glob(f"{prefix}*.*")):
         if p.suffix not in [".mp4", ".rgb"]:
             continue
