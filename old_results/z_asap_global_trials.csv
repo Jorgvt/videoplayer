@@ -1,0 +1,9 @@
+SubjectID,TrialNumber,Mode,Scene,LeftCondition,RightCondition,ChosenSide,ChosenCondition,RejectedCondition,ResponseTime_sec,PresentationFPS
+z,1,global,attic,attic:dlss_rr_level0,attic:dlss_rr_level1,LEFT,attic:dlss_rr_level0,attic:dlss_rr_level1,3.438,239.36
+z,2,global,attic,attic:judder_level1,attic:judder_level0,RIGHT,attic:judder_level0,attic:judder_level1,3.763,239.43
+z,3,global,attic,attic:dlss_rr_level2,attic:dlss_rr_level1,RIGHT,attic:dlss_rr_level1,attic:dlss_rr_level2,3.4672,239.09
+z,4,global,attic,attic:dlss_rr_level0,attic:dlss_rr_level2,LEFT,attic:dlss_rr_level0,attic:dlss_rr_level2,1.8835,238.88
+z,5,global,attic,attic:judder_level1,attic:judder_level2,LEFT,attic:judder_level1,attic:judder_level2,2.271,239.51
+z,6,global,attic,attic:judder_level2,attic:judder_level0,RIGHT,attic:judder_level0,attic:judder_level2,4.5508,239.29
+z,7,global,attic,attic:motion_noise_level1,attic:motion_noise_level0,LEFT,attic:motion_noise_level1,attic:motion_noise_level0,4.6034,239.74
+z,8,global,attic,attic:motion_noise_level1,attic:motion_noise_level2,RIGHT,attic:motion_noise_level2,attic:motion_noise_level1,3.4422,239.65

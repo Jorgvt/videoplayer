@@ -1,0 +1,10 @@
+SubjectID,TrialNumber,Scene,LeftCondition,RightCondition,ChosenSide,ChosenCondition,RejectedCondition,ResponseTime_sec,PresentationFPS
+09,1,attic,attic:dlss_rr_level2,attic:reference,RIGHT,attic:reference,attic:dlss_rr_level2,2.3047,240.23
+09,2,classroom,classroom:reference,classroom:duration_flicker_level2,RIGHT,classroom:duration_flicker_level2,classroom:reference,0.2209,240.06
+09,3,bistro_exterior,bistro_exterior:judder_level2,bistro_exterior:reference,RIGHT,bistro_exterior:reference,bistro_exterior:judder_level2,1.4584,240.02
+09,4,marbles,marbles:reference,marbles:motion_noise_level2,RIGHT,marbles:motion_noise_level2,marbles:reference,0.3126,239.99
+09,5,bistro_interior,bistro_interior:motion_resolution_level2,bistro_interior:reference,RIGHT,bistro_interior:reference,bistro_interior:motion_resolution_level2,23.4293,240.0
+09,6,attic,attic:reference,attic:noise_colors_level2,RIGHT,attic:noise_colors_level2,attic:reference,5.0792,240.0
+09,7,pink_room,pink_room:restir_level2,pink_room:reference,RIGHT,pink_room:reference,pink_room:restir_level2,7.4292,240.0
+09,8,zeroday,zeroday:reference,zeroday:stutter_level2,RIGHT,zeroday:stutter_level2,zeroday:reference,1.7459,240.01
+09,9,landscape,landscape:temporal-resolution-multiplexing_level2,landscape:reference,RIGHT,landscape:reference,landscape:temporal-resolution-multiplexing_level2,0.3418,240.03
